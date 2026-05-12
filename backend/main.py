@@ -109,28 +109,37 @@ async def lifespan(app: FastAPI):
     # Phase 4: Connect Redis
     # redis_client is a module-level singleton (RedisClient instance).
     # connect() creates the connection pool and pings Redis to confirm it's up.
-    # If Redis is down at startup, we fail fast with a clear MemoryStoreError.
-    await redis_client.connect()
-    logger.info("Redis connection pool ready.")
+    #
+    # WHY try/except here (not fail-fast):
+    #   On Railway, the container must answer /health/live before env vars are
+    #   fully propagated or Upstash accepts the first connection. If Redis is
+    #   temporarily unreachable at cold boot, we log a warning and continue.
+    #   Job submissions will fail gracefully (circuit breaker) until Redis is up.
+    #   This is safer than crashing the container and retrying from scratch.
+    try:
+        await redis_client.connect()
+        logger.info("Redis connection pool ready.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable at startup — job queue degraded: %s", exc)
 
-    # -------------------------------------------------------------------------
     # Phase 6: Postgres — create tables via ORM
     #
     # init_db() runs create_all() on the async SQLAlchemy engine.
     # In production this creates tables if they don't exist (safe to call on restart).
     #
-    # WHY create_all() AND NOT Alembic?
-    # (From Storage-Engines.md wiki):
-    #   "For early-stage services, create_all() on startup is pragmatic.
-    #    Add Alembic only when the schema is stable and breaking changes need tracking."
+    # WHY try/except here (not fail-fast):
+    #   Neon serverless Postgres has a ~30s cold start after idle.
+    #   On Railway's first boot both the container AND Neon may be waking up
+    #   simultaneously. Crashing startup forces a full container restart which
+    #   hits Neon again before it's ready — a retry death spiral.
+    #   Instead we log a warning and let the /health endpoint surface the error.
+    #   The first real request that needs Postgres will retry via SQLAlchemy pool.
     # TODO: Replace with Alembic migrations before v1.0.
-    #
-    # HARD DEPENDENCY: Unlike Qdrant, Postgres is NOT optional.
-    # If Postgres is unreachable at startup, we want the app to FAIL FAST
-    # rather than silently run without persistence.
-    # (Production-Hardening.md: "Hard deps crash startup. Optional deps log warning.")
-    await init_db()
-    logger.info("Postgres tables verified/created.")
+    try:
+        await init_db()
+        logger.info("Postgres tables verified/created.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Postgres unavailable at startup — will retry on first request: %s", exc)
 
     # -------------------------------------------------------------------------
     # Phase 6: Qdrant — ensure code_chunks collection exists
