@@ -626,7 +626,16 @@ async def aggregate_results(state: PRReviewState) -> dict[str, Any]:
         1 for r in verdict_records
         if r.succeeded and r.verdict == AgentVerdict.CRITICAL_BLOCK
     )
-    if critical_block_count >= 2:
+    if critical_block_count >= 3:
+        # WHY 3+ not 2+:
+        #   With threshold=2, a PR containing real security issues (SQL injection,
+        #   PCI violations etc.) correctly triggers security+quality CRITICAL, but
+        #   the review is silently saved to HITL queue and never posted to GitHub.
+        #   That makes the agent invisible on the PR — the author sees nothing.
+        #   With threshold=3, 1-2 CRITICAL agents still POST a REQUEST_CHANGES
+        #   review to GitHub (visible, actionable), while only extreme cases (3+
+        #   agents all screaming CRITICAL) escalate to the human review queue.
+        #   This is the right balance: safety without silence.
         critical_agents = [
             r.agent_type for r in verdict_records
             if r.succeeded and r.verdict == AgentVerdict.CRITICAL_BLOCK
@@ -634,7 +643,7 @@ async def aggregate_results(state: PRReviewState) -> dict[str, Any]:
         reason = (
             f"{critical_block_count} agents ({', '.join(critical_agents)}) "
             f"independently flagged CRITICAL findings. "
-            f"Safety-Threshold Rule: 2+ agents required for HITL escalation. "
+            f"Safety-Threshold Rule: 3+ agents required for HITL escalation. "
             f"Routing to human review queue."
         )
         logger.warning(
