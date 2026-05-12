@@ -29,14 +29,12 @@ builder = "NIXPACKS"
 #   The Dockerfile CMD uses shell form which DOES expand ${PORT:-8000}.
 #   Removing startCommand lets the Dockerfile CMD take over — correct behavior.
 
-# Railway hits this path to decide if the container is healthy.
-# WHY /health/live not /health:
-#   /health (deep check) connects to Postgres + Redis + Qdrant before returning 200.
-#   On Railway's first boot, Neon has a 30s cold start, Redis may not have
-#   received the injected REDIS_URL yet, causing a 503 -> healthcheck failure.
-#   /health/live is a pure liveness probe — always 200 while the process is alive.
-#   We validate real connectivity via /health AFTER the service is running.
-healthcheckPath = "/health/live"
+# WHY no healthcheckPath here:
+#   railway.toml applies to ALL services built from this repo.
+#   The worker service has no HTTP server — any healthcheck path will always
+#   fail (connection refused) causing the worker to never deploy.
+#   Health check for the web service is set in the Railway dashboard instead:
+#     web service -> Settings -> Health Check -> /health/live
 
 # WHY 300 seconds:
 #   Neon serverless Postgres has a ~30s cold start after idle.
