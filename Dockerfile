@@ -63,4 +63,9 @@ EXPOSE 8000
 #
 # Note: --reload is NOT used here. We only want reload in local dev
 # (outside Docker). Inside Docker, source changes require a rebuild anyway.
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# WHY shell form (not JSON array form):
+#   JSON array form ["uvicorn", ..., "--port", "8000"] does NOT expand env vars.
+#   Railway injects $PORT at runtime (not 8000) and routes traffic to that port.
+#   Shell form runs via /bin/sh -c which DOES expand ${PORT:-8000}.
+#   Fallback to 8000 keeps local docker-compose working without a PORT env var.
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
