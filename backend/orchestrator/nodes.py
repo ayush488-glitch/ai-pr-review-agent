@@ -777,13 +777,20 @@ async def post_review(state: PRReviewState) -> dict[str, Any]:
     # -------------------------------------------------------------------------
     body = _build_review_summary(state, max_chars=cfg.review_body_max_characters)
     event = _verdict_to_review_event(state["verdict"])
-    inline_comments = _findings_to_review_comments(state["final_findings"])
 
+    # WHY no inline comments here:
+    #   Inline review comments require the `line` number to exist inside the
+    #   diff hunk for that file. The LLM returns line numbers from the full file
+    #   (e.g. line 30 of payment.py) but if that line isn't in the diff GitHub
+    #   returns 422 Unprocessable Entity and the ENTIRE review is rejected —
+    #   including the summary body. Stripping inline comments means the review
+    #   always posts successfully. Proper diff-position mapping (parsing the
+    #   unified diff to find hunk positions) will be added in Phase 17.
     payload = PostReviewPayload(
         commit_id=state["head_commit_sha"],
         body=body,
         event=event,
-        comments=inline_comments,
+        comments=[],  # inline comments deferred to Phase 17 (diff position mapping)
     )
 
     # -------------------------------------------------------------------------
