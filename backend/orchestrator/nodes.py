@@ -912,10 +912,11 @@ async def post_review(state: PRReviewState) -> dict[str, Any]:
         # or 422 Unprocessable — bad payload, or 401 — fake/demo repo).
         # Route to HITL, but ALWAYS save to DB so the verdict is retrievable.
         logger.error(
-            "post_review | github_api_error | status=%s error=%s workflow=%s "
+            "post_review | github_api_error | status=%s error=%s response_body=%s workflow=%s "
             "— routing to HITL",
             e.status_code,
             str(e),
+            getattr(e, "response_body", ""),
             state["workflow_id"],
         )
         # BUG FIX (demo-day Bug #5): Save to DB even when GitHub post fails.
