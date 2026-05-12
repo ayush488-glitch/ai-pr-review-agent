@@ -1246,17 +1246,40 @@ def _build_review_summary(
             agent_lines.append(f"  - {agent_name}: ❌ Failed — {err}")
     agent_section = "\n".join(agent_lines) if agent_lines else "  - No agent data available."
 
-    # ── PR-level findings (no file_path — not posted as inline comments) ──────
-    pr_level = [f for f in findings if not f.get("file_path")]
-    pr_level_lines = []
-    for f in pr_level[:10]:  # cap at 10 to keep body readable
-        sev = f.get("severity", "low").upper()
-        summary = f.get("summary", "")
-        suggestion = f.get("suggestion", "")
-        pr_level_lines.append(f"- **[{sev}]** {summary}")
-        if suggestion:
-            pr_level_lines.append(f"  > Suggestion: {suggestion}")
-    pr_level_section = "\n".join(pr_level_lines) if pr_level_lines else "_None — all findings are inline._"
+    # ── All findings grouped by file ─────────────────────────────────────────
+    # WHY grouped by file not by agent:
+    #   Inline comments are deferred to Phase 17 (diff position mapping).
+    #   Until then ALL findings live in the review body. Grouping by file
+    #   lets the developer jump straight to the relevant file for each issue.
+    #   Findings without a file_path are listed under "General" at the top.
+    from collections import defaultdict
+    by_file: dict[str, list] = defaultdict(list)
+    for f in findings:
+        key = f.get("file_path") or "General"
+        by_file[key].append(f)
+
+    SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    findings_lines = []
+    sorted_files = sorted(by_file.keys(), key=lambda k: ("" if k == "General" else k))
+    for file_key in sorted_files:
+        file_findings = sorted(
+            by_file[file_key],
+            key=lambda f: SEV_ORDER.get(f.get("severity", "low").lower(), 3)
+        )
+        findings_lines.append(f"\n**`{file_key}`**")
+        for f in file_findings:
+            sev = f.get("severity", "low").upper()
+            agent = f.get("agent_type", "agent").capitalize()
+            line = f.get("line_start")
+            line_str = f" _(line {line})_" if line else ""
+            summary = f.get("summary", "")
+            suggestion = f.get("suggestion", "")
+            emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}.get(sev, "⚪")
+            findings_lines.append(f"- {emoji} **[{sev}]** {summary}{line_str} _— {agent}_")
+            if suggestion:
+                findings_lines.append(f"  > 💡 {suggestion}")
+
+    findings_section = "\n".join(findings_lines) if findings_lines else "_No findings._"
 
     # ── Assemble body ─────────────────────────────────────────────────────────
     body = f"""## 🤖 AI PR Review Agent
@@ -1275,9 +1298,9 @@ def _build_review_summary(
 
 {agent_section}
 
-### PR-Level Findings
+### Detailed Findings
 
-{pr_level_section}
+{findings_section}
 
 ---
 
