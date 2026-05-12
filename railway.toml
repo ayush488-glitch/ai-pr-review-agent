@@ -23,9 +23,11 @@
 builder = "NIXPACKS"
 
 [deploy]
-# The web process command from Procfile. Railway also reads the Procfile
-# directly — this is a belt-and-suspenders explicit declaration.
-startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+# WHY no startCommand here:
+#   railway.toml startCommand passes args directly to the process — $PORT is
+#   NOT shell-expanded, uvicorn receives the literal string "$PORT" and crashes.
+#   The Dockerfile CMD uses shell form which DOES expand ${PORT:-8000}.
+#   Removing startCommand lets the Dockerfile CMD take over — correct behavior.
 
 # Railway hits this path to decide if the container is healthy.
 # WHY /health/live not /health:
