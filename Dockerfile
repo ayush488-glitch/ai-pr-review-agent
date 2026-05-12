@@ -63,9 +63,10 @@ EXPOSE 8000
 #
 # Note: --reload is NOT used here. We only want reload in local dev
 # (outside Docker). Inside Docker, source changes require a rebuild anyway.
-# WHY shell form (not JSON array form):
-#   JSON array form ["uvicorn", ..., "--port", "8000"] does NOT expand env vars.
-#   Railway injects $PORT at runtime (not 8000) and routes traffic to that port.
-#   Shell form runs via /bin/sh -c which DOES expand ${PORT:-8000}.
-#   Fallback to 8000 keeps local docker-compose working without a PORT env var.
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
+# WHY ["sh", "-c", "..."] form:
+#   Railway parses the Dockerfile CMD to extract the start command.
+#   Shell form (CMD uvicorn ... ${PORT:-8000}) confuses Railway's parser -> crash.
+#   Plain JSON array (["uvicorn", "--port", "8000"]) doesn't expand $PORT env var.
+#   ["sh", "-c", "..."] gives us BOTH: Railway parses it as valid JSON array,
+#   and sh -c runs it through a shell which expands ${PORT:-8000} at runtime.
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
