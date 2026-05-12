@@ -1,0 +1,59 @@
+# =============================================================================
+# ai-pr-review-agent — .gitignore
+#
+# WHY: .env contains real API keys (OpenAI, GitHub token, Qdrant, webhook
+#      secret). Never commit it. .env.example (this repo) has placeholder
+#      values only and IS committed — it doubles as onboarding docs.
+# =============================================================================
+
+# --- Secrets & environment ---
+.env
+.env.local
+.env.*.local
+
+# --- Python bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Build / packaging ---
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# --- Test & coverage artefacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Linting caches ---
+.ruff_cache/
+.mypy_cache/
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# --- Docker volumes that sometimes leak into repo ---
+postgres_data/
+redis_data/
+qdrant_data/
+
+# --- Logs ---
+*.log
+logs/

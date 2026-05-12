@@ -1,0 +1,357 @@
+# backend/main.py
+#
+# The FastAPI application entry point.
+#
+# This file does three things:
+#   1. Creates the FastAPI app instance with metadata
+#   2. Registers all routers (webhook, and later: reviews, hitl, auth, etc.)
+#   3. Defines startup and shutdown lifecycle events
+#
+# HOW TO RUN:
+#   uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+#
+#   --reload    auto-restarts when you change a file (development only)
+#   --host 0.0.0.0  accessible from outside localhost (needed for webhook tunnels)
+#   --port 8000     the port the app listens on
+#
+# ONCE RUNNING:
+#   API docs (Swagger UI): http://localhost:8000/docs
+#   Alternative docs:      http://localhost:8000/redoc
+#   Health check:          http://localhost:8000/health
+#
+# FIX (Design by Contract / Don't rely on deprecated APIs):
+#   @app.on_event("startup") was deprecated in FastAPI 0.93.
+#   The modern pattern is a lifespan context manager.
+#   It uses a single async function with a yield — code before yield runs at
+#   startup, code after yield runs at shutdown. Easier to reason about,
+#   supported by pytest-asyncio fixtures, and won't break on FastAPI upgrades.
+#
+# FIX (DRY — single source of truth for version):
+#   Version used to be hardcoded as "0.1.0" here AND in README.
+#   Now it is read from pyproject.toml via importlib.metadata.
+#   When we bump the version in pyproject.toml, all places update automatically.
+
+import logging
+from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from backend.config.settings import get_settings
+from backend.database.postgres import init_db
+from backend.memory.context_retriever import retrieve_context_for_diff  # noqa: F401 (used in routes)
+from backend.memory.qdrant_client import ensure_collection
+from backend.memory.redis_client import redis_client
+from backend.webhook_receiver.router import router as webhook_router
+
+# Phase 3 REST API routers
+from backend.api.reviews import router as reviews_router
+from backend.api.queue import router as queue_router
+
+# Phase 12 circuit breaker registry — surfaced in /health
+from backend.reliability.circuit_breaker import list_breaker_summaries
+
+# -------------------------------------------------------------------------
+# Read version from pyproject.toml (single source of truth)
+# PackageNotFoundError happens in development before the package is installed.
+# In that case we fall back to "dev". In production (installed via pip/uv) it
+# reads the real version from the package metadata.
+# -------------------------------------------------------------------------
+try:
+    APP_VERSION = version("ai-pr-review-agent")
+except PackageNotFoundError:
+    APP_VERSION = "dev"
+
+# -------------------------------------------------------------------------
+# Configure the root logger once, here, before anything else runs.
+# All modules use logging.getLogger(__name__) — they inherit this config.
+# -------------------------------------------------------------------------
+settings = get_settings()
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+
+# -------------------------------------------------------------------------
+# Lifespan context manager
+#
+# Everything BEFORE yield runs at startup (before accepting requests).
+# Everything AFTER yield runs at shutdown (after the last request finishes).
+#
+# This replaces the deprecated @app.on_event("startup") / ("shutdown").
+# The advantage: startup and shutdown are co-located in one function.
+# You can see paired open/close operations next to each other.
+#
+# Phase 4 will add: Redis connection pool (open before yield, close after)
+# Phase 6 will add: Qdrant client init (open before yield, close after)
+# -------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    cfg = get_settings()
+    logger.info(
+        "AI PR Review Agent starting | version=%s env=%s log_level=%s",
+        APP_VERSION,
+        cfg.app_env,
+        cfg.log_level,
+    )
+    logger.info("Max concurrent reviews: %d", cfg.max_concurrent_reviews)
+    logger.info("Confidence threshold:   %.2f", cfg.confidence_threshold)
+    logger.info("Workflow timeout:       %ds", cfg.workflow_timeout_seconds)
+
+    # Phase 4: Connect Redis
+    # redis_client is a module-level singleton (RedisClient instance).
+    # connect() creates the connection pool and pings Redis to confirm it's up.
+    # If Redis is down at startup, we fail fast with a clear MemoryStoreError.
+    await redis_client.connect()
+    logger.info("Redis connection pool ready.")
+
+    # -------------------------------------------------------------------------
+    # Phase 6: Postgres — create tables via ORM
+    #
+    # init_db() runs create_all() on the async SQLAlchemy engine.
+    # In production this creates tables if they don't exist (safe to call on restart).
+    #
+    # WHY create_all() AND NOT Alembic?
+    # (From Storage-Engines.md wiki):
+    #   "For early-stage services, create_all() on startup is pragmatic.
+    #    Add Alembic only when the schema is stable and breaking changes need tracking."
+    # TODO: Replace with Alembic migrations before v1.0.
+    #
+    # HARD DEPENDENCY: Unlike Qdrant, Postgres is NOT optional.
+    # If Postgres is unreachable at startup, we want the app to FAIL FAST
+    # rather than silently run without persistence.
+    # (Production-Hardening.md: "Hard deps crash startup. Optional deps log warning.")
+    await init_db()
+    logger.info("Postgres tables verified/created.")
+
+    # -------------------------------------------------------------------------
+    # Phase 6: Qdrant — ensure code_chunks collection exists
+    #
+    # ensure_collection() is BEST-EFFORT: returns True/False, never raises.
+    # (See qdrant_client.py for graceful degradation implementation.)
+    # If Qdrant is down at startup:
+    #   - qdrant_ready = False (logged as warning below)
+    #   - The server starts normally
+    #   - RAG context simply returns "" for all reviews (pipeline unaffected)
+    # (Production-Hardening.md: "Optional deps log warning, never crash startup.")
+    qdrant_ready = await ensure_collection()
+    if qdrant_ready:
+        logger.info("Qdrant collection 'code_chunks' ready.")
+    else:
+        logger.warning(
+            "Qdrant unavailable at startup — RAG context disabled. "
+            "Reviews will run with diff-only analysis. "
+            "Check QDRANT_URL in .env and ensure Qdrant is running."
+        )
+
+    yield  # <-- server is running, accepting requests
+
+    # --- SHUTDOWN ---
+    logger.info("AI PR Review Agent shutting down.")
+
+    # Phase 4: Disconnect Redis
+    # aclose() waits for in-flight operations to finish, then closes the pool.
+    await redis_client.disconnect()
+
+
+# -------------------------------------------------------------------------
+# Create the FastAPI app
+# -------------------------------------------------------------------------
+app = FastAPI(
+    title="AI PR Review Agent",
+    description=(
+        "A production-grade AI agent that reviews GitHub Pull Requests automatically. "
+        "Runs specialist sub-agents in parallel for security, quality, tests, and docs."
+    ),
+    version=APP_VERSION,
+    lifespan=lifespan,
+    # In production, hide /docs and /redoc — they expose your API structure.
+    docs_url="/docs" if settings.is_development else None,
+    redoc_url="/redoc" if settings.is_development else None,
+)
+
+
+# -------------------------------------------------------------------------
+# CORS Middleware
+#
+# Controls which browser origins can call our API.
+# Without CORS headers, the frontend dashboard (different port/domain)
+# gets blocked by the browser's same-origin policy.
+#
+# Development: allow all origins (convenient, not for production).
+# Production:  restrict to the actual dashboard domain.
+# -------------------------------------------------------------------------
+if settings.is_development:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://your-dashboard-domain.com"],  # TODO: Phase 13 sets this
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+# -------------------------------------------------------------------------
+# Register Routers
+#
+# Each router owns a group of related endpoints.
+# Add routers here as modules are built.
+# -------------------------------------------------------------------------
+
+app.include_router(webhook_router)        # POST /webhook/github
+
+# Phase 3 REST API routers
+app.include_router(reviews_router)        # GET /api/v1/reviews, GET /api/v1/reviews/{id}
+app.include_router(queue_router)          # GET /api/v1/queue
+
+# TODO: add as phases progress
+# app.include_router(hitl_router)         # POST /api/v1/queue/{id}/approve, /reject  (Phase 19)
+# app.include_router(auth_router)         # POST /api/v1/auth/login, GET /api/v1/auth/me (Phase 11)
+
+
+# -------------------------------------------------------------------------
+# Health Check — deep (Phase 13)
+#
+# TWO LEVELS of health endpoints:
+#
+#   GET /health/live  — liveness probe (k8s: is the process alive?)
+#                       Always 200 if the process is up. No external calls.
+#                       Kubernetes restarts the pod if this fails.
+#
+#   GET /health       — readiness probe (k8s: can this pod serve traffic?)
+#                       Checks Postgres, Redis, Qdrant reachability.
+#                       Returns 200 (all ok) or 503 (degraded).
+#                       Load balancers remove the pod from rotation if 503.
+#
+# release-it/Operations-Patterns: "Don't accept connections until start-up
+# is complete." The readiness probe enforces this — traffic only lands on
+# a pod that can actually process it.
+# -------------------------------------------------------------------------
+
+@app.get(
+    "/health/live",
+    tags=["ops"],
+    summary="Liveness probe",
+    description="Returns 200 if the process is running. No dependency checks.",
+)
+async def liveness() -> dict:
+    """Liveness: always 200 while the process is alive."""
+    return {"status": "ok", "version": APP_VERSION}
+
+
+async def _check_postgres() -> str:
+    """
+    Attempt a trivial async SELECT 1 against Postgres.
+    Returns "ok" or an error string. Never raises.
+    """
+    try:
+        from backend.database.postgres import get_engine
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+        from sqlalchemy import text
+        factory = async_sessionmaker(
+            bind=get_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        async with factory() as session:
+            await session.execute(text("SELECT 1"))
+        return "ok"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+async def _check_redis() -> str:
+    """Ping Redis. Returns 'ok' or an error string. Never raises."""
+    try:
+        pong = await redis_client.ping()
+        return "ok" if pong else "error: no PONG response"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+async def _check_qdrant() -> str:
+    """
+    Call Qdrant /healthz via the existing ensure_collection() helper.
+    Returns 'ok' or 'degraded (RAG disabled)'. Never raises.
+    """
+    try:
+        ok = await ensure_collection()
+        return "ok" if ok else "degraded (collection missing — RAG disabled)"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
+@app.get(
+    "/health",
+    tags=["ops"],
+    summary="Readiness probe",
+    description=(
+        "Checks Postgres, Redis, and Qdrant reachability. "
+        "Returns 200 when all services are healthy, 503 when any are degraded."
+    ),
+)
+async def health_check() -> JSONResponse:
+    """
+    Deep readiness check.
+
+    Response shape:
+      {
+        "status": "ok" | "degraded",
+        "version": "0.13.0",
+        "env": "development",
+        "services": {
+          "postgres": "ok" | "error: ...",
+          "redis":    "ok" | "error: ...",
+          "qdrant":   "ok" | "degraded ..." | "error: ..."
+        },
+        "circuit_breakers": [
+          {"name": "...", "state": "CLOSED", "failures": 0}, ...
+        ]
+      }
+
+    HTTP status: 200 if status == "ok", 503 if "degraded".
+    """
+    postgres_status = await _check_postgres()
+    redis_status = await _check_redis()
+    qdrant_status = await _check_qdrant()
+
+    cfg = get_settings()
+
+    # "degraded" if any hard dependency (Postgres, Redis) is unhealthy.
+    # Qdrant failure is soft — reviews still run, just without RAG context.
+    hard_ok = (
+        postgres_status == "ok"
+        and redis_status == "ok"
+    )
+    overall = "ok" if hard_ok else "degraded"
+
+    body: dict[str, Any] = {
+        "status": overall,
+        "version": APP_VERSION,
+        "env": cfg.app_env,
+        "services": {
+            "postgres": postgres_status,
+            "redis": redis_status,
+            "qdrant": qdrant_status,
+        },
+        "circuit_breakers": list_breaker_summaries(),
+    }
+
+    http_status = 200 if overall == "ok" else 503
+    return JSONResponse(content=body, status_code=http_status)

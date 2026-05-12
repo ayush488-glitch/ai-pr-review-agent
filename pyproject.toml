@@ -1,0 +1,93 @@
+[project]
+name = "ai-pr-review-agent"
+version = "0.1.0"
+description = "Production-grade AI Pull Request Review Agent"
+requires-python = ">=3.10"
+
+dependencies = [
+    # Web framework - FastAPI is async-native, fast, and has automatic API docs
+    "fastapi>=0.111.0",
+
+    # ASGI server - runs our FastAPI app
+    "uvicorn[standard]>=0.29.0",
+
+    # Data validation - Pydantic v2 for all our models and settings
+    "pydantic>=2.7.0",
+
+    # Settings management - reads from .env file and environment variables
+    "pydantic-settings>=2.2.0",
+
+    # HTTP client - used by GitHub client, async-native
+    "httpx>=0.27.0",
+
+    # Redis client - job queue + short-term memory
+    "redis>=5.0.0",
+
+    # Job queue backed by Redis - ARQ (async, not RQ)
+    "arq>=0.25.0",
+
+    # Postgres async driver - for structured review history
+    "asyncpg>=0.29.0",
+
+    # ORM for Postgres - SQLAlchemy async mode
+    "sqlalchemy[asyncio]>=2.0.0",
+
+    # LangGraph - workflow orchestration (ADR-001)
+    "langgraph>=0.1.0",
+
+    # LangChain core - base classes used by LangGraph
+    "langchain-core>=0.2.0",
+
+    # OpenAI SDK - one of our model providers
+    "openai>=1.30.0",
+
+    # Anthropic SDK - second model provider (for security analysis)
+    "anthropic>=0.28.0",
+
+    # Qdrant client - vector store for RAG
+    "qdrant-client>=1.9.0",
+
+    # Python-dotenv - load .env file in local dev
+    "python-dotenv>=1.0.0",
+
+    # OpenTelemetry - Phase 10 Observability & Tracing
+    # API is the vendor-neutral facade; SDK provides the in-process implementation.
+    # OTLP exporter ships traces to a collector (Jaeger/Grafana Tempo) via HTTP.
+    # Wiki: "Observability must be designed as infrastructure, not retrofitted."
+    # opensre uses the same three-package split (opentelemetry-api + sdk + otlp exporter).
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+
+    # Sentry - runtime error capture with sensitive-field scrubbing
+    # opensre pattern: init_sentry() once per process entrypoint; scrubs _key/_token headers.
+    "sentry-sdk>=1.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing framework
+    "pytest>=8.0.0",
+    # Async test support
+    "pytest-asyncio>=0.23.0",
+    # HTTP test client for FastAPI
+    "httpx>=0.27.0",
+    # Code formatter
+    "ruff>=0.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.ruff]
+# Ruff is a fast Python linter and formatter
+line-length = 88
+target-version = "py311"
+
+[tool.pytest.ini_options]
+# Tell pytest to handle async test functions automatically
+asyncio_mode = "auto"

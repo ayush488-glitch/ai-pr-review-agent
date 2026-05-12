@@ -1,0 +1,78 @@
+{
+  "_comment": "Hand-authored GitHub PR webhook payload for testing the full review pipeline. Simulates a 'pull_request opened' event where a developer accidentally committed a hardcoded AWS secret key and weak cryptography — giving all 4 agents (security, quality, test, docs) something real to flag.",
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "id": 1234567890,
+    "number": 42,
+    "state": "open",
+    "title": "feat: add payment processing integration",
+    "body": "This PR adds Stripe payment processing to the checkout flow.\n\nChanges:\n- Added `payments/stripe_client.py` with API key config\n- Added `payments/processor.py` with charge logic\n- Added `utils/crypto.py` for generating idempotency keys\n\nNote: I hardcoded the API key temporarily for local testing, will fix before merge.",
+    "head": {
+      "sha": "abc123def456abc123def456abc123def456abc1",
+      "ref": "feat/payment-processing",
+      "label": "octocat:feat/payment-processing",
+      "repo": {
+        "id": 987654321,
+        "name": "acme-app",
+        "full_name": "octocat/acme-app",
+        "private": false,
+        "html_url": "https://github.com/octocat/acme-app",
+        "clone_url": "https://github.com/octocat/acme-app.git",
+        "default_branch": "main"
+      }
+    },
+    "base": {
+      "sha": "def456abc123def456abc123def456abc123def4",
+      "ref": "main",
+      "label": "octocat:main",
+      "repo": {
+        "id": 987654321,
+        "name": "acme-app",
+        "full_name": "octocat/acme-app",
+        "private": false,
+        "html_url": "https://github.com/octocat/acme-app",
+        "clone_url": "https://github.com/acme-app.git",
+        "default_branch": "main"
+      }
+    },
+    "user": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    },
+    "diff_url": "https://github.com/octocat/acme-app/pull/42.diff",
+    "patch_url": "https://github.com/octocat/acme-app/pull/42.patch",
+    "html_url": "https://github.com/octocat/acme-app/pull/42",
+    "additions": 87,
+    "deletions": 3,
+    "changed_files": 3,
+    "draft": false,
+    "mergeable": true,
+    "commits": 2,
+    "diff": "diff --git a/payments/stripe_client.py b/payments/stripe_client.py\nnew file mode 100644\nindex 0000000..1a2b3c4\n--- /dev/null\n+++ b/payments/stripe_client.py\n@@ -0,0 +1,28 @@\n+\"\"\"\n+Stripe API client.\n+\"\"\"\n+import stripe\n+\n+# TODO: move to environment variable before merging\n+STRIPE_SECRET_KEY = \"sk_live_4eC39HqLyjWDarjtT1zdp7dc\"\n+\n+stripe.api_key = STRIPE_SECRET_KEY\n+\n+\n+def create_customer(email: str, name: str) -> dict:\n+    \"\"\"Create a new Stripe customer.\"\"\"\n+    customer = stripe.Customer.create(email=email, name=name)\n+    return {\"id\": customer.id, \"email\": customer.email}\n+\n+\n+def charge_card(customer_id: str, amount_cents: int, currency: str = \"usd\") -> dict:\n+    \"\"\"Charge a card on file for a customer.\"\"\"\n+    # No input validation — amount_cents could be 0 or negative\n+    intent = stripe.PaymentIntent.create(\n+        amount=amount_cents,\n+        currency=currency,\n+        customer=customer_id,\n+        confirm=True,\n+    )\n+    return {\"intent_id\": intent.id, \"status\": intent.status}\n+\ndiff --git a/payments/processor.py b/payments/processor.py\nnew file mode 100644\nindex 0000000..2b3c4d5\n--- /dev/null\n+++ b/payments/processor.py\n@@ -0,0 +1,35 @@\n+\"\"\"\n+Payment processor — orchestrates charge flow.\n+\"\"\"\n+from payments.stripe_client import charge_card, create_customer\n+\n+\n+def process_payment(user_email: str, user_name: str, amount: int) -> dict:\n+    \"\"\"\n+    Process a payment for a user.\n+\n+    Args:\n+        user_email: Customer email address.\n+        user_name: Customer display name.\n+        amount: Charge amount in cents.\n+\n+    Returns:\n+        dict with intent_id and status.\n+    \"\"\"\n+    # No error handling — if create_customer raises, the caller crashes\n+    customer = create_customer(user_email, user_name)\n+    result = charge_card(customer[\"id\"], amount)\n+    return result\n+\n+\n+def refund_payment(intent_id: str) -> dict:\n+    \"\"\"Refund a previously charged payment intent.\"\"\"\n+    import stripe\n+    # Refund logic not implemented — raises NotImplementedError silently\n+    pass\n+\ndiff --git a/utils/crypto.py b/utils/crypto.py\nnew file mode 100644\nindex 0000000..3c4d5e6\n--- /dev/null\n+++ b/utils/crypto.py\n@@ -0,0 +1,24 @@\n+\"\"\"\n+Cryptography utilities.\n+\"\"\"\n+import hashlib\n+import random\n+\n+# AWS credentials for generating HMAC signatures\n+AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7EXAMPLE\"\n+AWS_SECRET = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"\n+\n+\n+def generate_idempotency_key(order_id: str) -> str:\n+    \"\"\"Generate a unique idempotency key for a payment.\"\"\"\n+    # Using random.random() — not cryptographically secure!\n+    noise = random.random()\n+    return hashlib.md5(f\"{order_id}{noise}\".encode()).hexdigest()\n+\n+\n+def hash_card_number(card_number: str) -> str:\n+    \"\"\"Hash a credit card number for storage.\"\"\"\n+    # MD5 is cryptographically broken — collision attacks are practical\n+    return hashlib.md5(card_number.encode()).hexdigest()\n+"
+  },
+  "repository": {
+    "id": 987654321,
+    "name": "acme-app",
+    "full_name": "octocat/acme-app",
+    "private": false,
+    "html_url": "https://github.com/octocat/acme-app",
+    "clone_url": "https://github.com/octocat/acme-app.git",
+    "description": "ACME Corp main application",
+    "owner": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    }
+  },
+  "sender": {
+    "login": "octocat",
+    "id": 1,
+    "type": "User"
+  },
+  "installation": {
+    "id": 12345,
+    "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU="
+  }
+}

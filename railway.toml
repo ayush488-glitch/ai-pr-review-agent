@@ -1,0 +1,48 @@
+# railway.toml — Railway deployment configuration for the API service
+#
+# DOCS: https://docs.railway.app/reference/config-as-code
+#
+# WHY THIS FILE EXISTS:
+#   Railway can auto-detect a Python app and build it with Nixpacks, but
+#   without this file it won't know:
+#     - where the health check endpoint is
+#     - how long to wait before declaring startup failed
+#     - what to do when the process crashes
+#
+# WHICH SERVICE THIS APPLIES TO:
+#   The "api" / web service. The "worker" service in Railway gets its own
+#   Railway dashboard settings (no health check needed — it has no HTTP port).
+#
+# NIXPACKS:
+#   Nixpacks reads requirements.txt automatically. No Dockerfile needed on
+#   Railway. Our Dockerfile is kept for local docker-compose only.
+
+[build]
+# Nixpacks auto-detects Python from requirements.txt and builds a reproducible
+# environment. No custom buildpack or Dockerfile needed for Railway.
+builder = "NIXPACKS"
+
+[deploy]
+# The web process command from Procfile. Railway also reads the Procfile
+# directly — this is a belt-and-suspenders explicit declaration.
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+
+# Railway hits this path to decide if the container is healthy.
+# We use /health because it checks Postgres + Redis + Qdrant connectivity.
+# If /health returns non-2xx, Railway restarts the container.
+healthcheckPath = "/health"
+
+# WHY 300 seconds:
+#   Neon serverless Postgres has a ~30s cold start after idle.
+#   LangGraph + all agent imports take ~5-8s.
+#   OpenAI client init + httpx connection pool = another ~2s.
+#   Total worst case = ~45s. 300s gives generous headroom for Railway's
+#   own container spin-up time (pulling image, injecting env vars, etc).
+#   After first boot, subsequent health checks pass in < 1s.
+healthcheckTimeout = 300
+
+# Restart on crash, up to 10 times with exponential backoff.
+# Railway's default is ON_FAILURE which is what we want — don't restart
+# on clean exit (exit 0) because that means intentional shutdown.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

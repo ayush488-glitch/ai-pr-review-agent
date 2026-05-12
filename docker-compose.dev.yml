@@ -1,0 +1,109 @@
+# docker-compose.dev.yml — AI PR Review Agent (ALL-LOCAL mode)
+#
+# Runs everything locally — Postgres, Redis, Qdrant, api, worker.
+# No cloud credentials needed. Data lives in local Docker volumes.
+# Use this for: offline dev, clean-slate testing, CI pipelines.
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up --build
+#
+# To reset completely:
+#   docker-compose -f docker-compose.dev.yml down -v
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: prreview_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pr_review_agent
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - prreview_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: prreview_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - prreview_net
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: prreview_qdrant
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - prreview_net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prreview_api
+    ports:
+      - "${API_PORT:-8001}:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/pr_review_agent"
+      REDIS_URL: "redis://redis:6379"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - prreview_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prreview_worker
+    command: ["python3", "-m", "arq", "backend.job_queue.arq_worker.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/pr_review_agent"
+      REDIS_URL: "redis://redis:6379"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - prreview_net
+
+networks:
+  prreview_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local

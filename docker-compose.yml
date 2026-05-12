@@ -1,0 +1,112 @@
+# docker-compose.yml — AI PR Review Agent
+#
+# HYBRID MODE: Neon (cloud Postgres) + local Redis + local Qdrant + api + worker
+#
+# WHY HYBRID:
+#   Postgres -> Neon cloud. Review data persists forever, survives laptop restarts.
+#   Redis    -> local Docker. Job queue, idempotency keys. Ephemeral is fine.
+#   Qdrant   -> local Docker. Code embeddings. Can be rebuilt any time.
+#
+# Neon is accessed via HTTPS (port 5432 over TLS) — works from anywhere.
+# Redis (6380) and Qdrant (6333) cloud ports are blocked on some local networks,
+# so we run them locally until the full cloud deploy in Phase 18.
+#
+# Usage:
+#   docker-compose up --build
+#
+# For all-local dev (no cloud at all):
+#   docker-compose -f docker-compose.dev.yml up --build
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Redis — local, port 6379
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: prreview_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - prreview_net
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — local, ports 6335 (HTTP) and 6336 (gRPC)
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: prreview_qdrant
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - prreview_net
+
+  # ---------------------------------------------------------------------------
+  # API — FastAPI application
+  # Postgres -> Neon cloud (from .env DATABASE_URL)
+  # Redis    -> local container
+  # Qdrant   -> local container
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prreview_api
+    ports:
+      - "${API_PORT:-8001}:8000"
+    env_file:
+      - .env
+    environment:
+      # DATABASE_URL comes from .env -> Neon cloud (persistent)
+      # Override Redis and Qdrant to point at local Docker services
+      REDIS_URL: "redis://redis:6379"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: ""
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - prreview_net
+
+  # ---------------------------------------------------------------------------
+  # Worker — ARQ async job queue worker
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prreview_worker
+    command: ["python3", "-m", "arq", "backend.job_queue.arq_worker.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: "redis://redis:6379"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: ""
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - prreview_net
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  prreview_net:
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  qdrant_data:
+    driver: local

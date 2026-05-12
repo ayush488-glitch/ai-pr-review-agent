@@ -1,0 +1,184 @@
+# .github/workflows/ci.yml
+#
+# CI pipeline for ai-pr-review-agent.
+#
+# JOBS (in order):
+#   1. lint         — ruff check + syntax check (no containers, fast, ~30s)
+#   2. smoke        — pytest smoke_phase14.py with mocked LLM (~60s)
+#   3. eval-gate    — pytest eval_gate.py with REAL OpenAI calls (~60s)
+#                     ONLY on push to main (not on PRs, to save API spend)
+#
+# RAILWAY AUTO-DEPLOY:
+#   Railway is configured in the Railway dashboard with "auto-deploy on push to main".
+#   It watches the main branch and deploys automatically when a new commit lands.
+#   There is no explicit "railway up" step here — Railway picks up the push
+#   once GitHub reports the ref as updated.
+#
+#   DEPLOY ORDER: Railway watches for the push event, not for CI completion.
+#   To block Railway from deploying until CI passes, set "Require CI checks" in
+#   the Railway dashboard (Settings -> Deployments -> require GitHub checks).
+#   This ensures a broken push never reaches production.
+#
+# SECRETS REQUIRED (set in GitHub repo Settings -> Secrets -> Actions):
+#   OPENAI_API_KEY  — used by the eval-gate job only
+#   (no other secrets needed for lint/smoke — those use mocks)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # JOB 1: Lint
+  # Fast check — catches import errors, syntax issues, and obvious style
+  # problems before wasting time on slow test jobs.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff + syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dev dependencies
+        # --no-install-project: install deps only, not the package itself.
+        # We don't need the package installed for a lint check.
+        run: uv pip install --system ruff
+
+      - name: Run ruff (linter)
+        # --select E,F,W: errors, pyflakes, warnings — catches real bugs.
+        # We skip style-only rules (I = isort, N = pep8 naming) in CI
+        # to avoid noise. Local dev can run the full ruff config.
+        run: ruff check backend/ tests/ --select E,F,W
+
+      - name: Syntax check all Python files
+        # Double-checks that every .py file at least parses cleanly.
+        # Catches files that ruff might skip (e.g. non-standard encoding).
+        run: |
+          find backend tests -name "*.py" | xargs python3 -m py_compile
+          echo "All Python files parse cleanly."
+
+  # ---------------------------------------------------------------------------
+  # JOB 2: Smoke tests (mocked LLM, no containers)
+  # Runs the Phase 14 smoke suite which covers ingestion, freshness, qdrant
+  # client, and basic orchestrator plumbing — all with mocked I/O.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke tests (mocked)
+    runs-on: ubuntu-latest
+    needs: lint   # don't run smoke if lint fails — saves CI minutes
+
+    # Minimal env vars for the settings module to initialize cleanly.
+    # Values are fake — all I/O is mocked in the smoke tests.
+    env:
+      APP_ENV: test
+      DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
+      REDIS_URL: "redis://localhost:6379"
+      QDRANT_URL: "http://localhost:6333"
+      QDRANT_API_KEY: "test-key"
+      QDRANT_COLLECTION_NAME: "test_collection"
+      OPENAI_API_KEY: "sk-test-placeholder-not-real"
+      ANTHROPIC_API_KEY: "test-placeholder"
+      OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
+      SECURITY_PROVIDER: "openai"
+      SECURITY_MODEL: "gpt-4o"
+      GITHUB_WEBHOOK_SECRET: "test-secret"
+      GITHUB_TOKEN: "ghp-test-placeholder"
+      GITHUB_API_BASE_URL: "https://api.github.com"
+      LOG_LEVEL: "ERROR"
+      API_KEY: "test-api-key"
+      CONFIDENCE_THRESHOLD: "0.85"
+      WORKFLOW_TIMEOUT_SECONDS: "300"
+      MAX_CONCURRENT_REVIEWS: "5"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install all project dependencies
+        # Install from pyproject.toml (all deps + dev extras).
+        # --system: install into the system Python (no venv inside CI).
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run smoke tests
+        run: python3 -m pytest tests/smoke_phase14.py -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # JOB 3: Eval gate (real OpenAI calls)
+  # Only runs on push to main — not on PRs.
+  # PRs get lint + smoke; the eval gate only runs before Railway deploy.
+  #
+  # WHY NOT ON PRs:
+  #   Each eval gate run costs ~$0.001 in OpenAI API calls.
+  #   PRs can have many pushes (commit, amend, fixup). Charging per push
+  #   on a PR branch adds up and provides no value — the branch isn't
+  #   deploying anywhere. Save the eval gate for the final "is this safe
+  #   to deploy?" check on main.
+  # ---------------------------------------------------------------------------
+  eval-gate:
+    name: Eval gate (real LLM)
+    runs-on: ubuntu-latest
+    needs: smoke   # eval gate only runs if smoke passes
+    # Only trigger on direct pushes to main (not PRs targeting main)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    env:
+      APP_ENV: test
+      DATABASE_URL: "postgresql+asyncpg://test:test@localhost:5432/test"
+      REDIS_URL: "redis://localhost:6379"
+      QDRANT_URL: "http://localhost:6333"
+      QDRANT_API_KEY: "test-key"
+      QDRANT_COLLECTION_NAME: "test_collection"
+      # OPENAI_API_KEY is injected from GitHub secrets (set in repo settings)
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: "test-placeholder"
+      OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
+      SECURITY_PROVIDER: "openai"
+      SECURITY_MODEL: "gpt-4o"
+      GITHUB_WEBHOOK_SECRET: "test-secret"
+      GITHUB_TOKEN: "ghp-test-placeholder"
+      GITHUB_API_BASE_URL: "https://api.github.com"
+      LOG_LEVEL: "INFO"
+      API_KEY: "test-api-key"
+      CONFIDENCE_THRESHOLD: "0.85"
+      WORKFLOW_TIMEOUT_SECONDS: "300"
+      MAX_CONCURRENT_REVIEWS: "5"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install all project dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run eval gate
+        # -s flag: print stdout so the [eval_gate] PASS summary is visible in CI logs.
+        # --timeout=120: each LLM call can take up to 15s; 4 agents in parallel = ~20s
+        # total. 120s is generous headroom.
+        run: python3 -m pytest tests/eval_gate.py -v -s --timeout=120
