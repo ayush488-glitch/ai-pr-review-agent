@@ -28,9 +28,13 @@ builder = "NIXPACKS"
 startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 
 # Railway hits this path to decide if the container is healthy.
-# We use /health because it checks Postgres + Redis + Qdrant connectivity.
-# If /health returns non-2xx, Railway restarts the container.
-healthcheckPath = "/health"
+# WHY /health/live not /health:
+#   /health (deep check) connects to Postgres + Redis + Qdrant before returning 200.
+#   On Railway's first boot, Neon has a 30s cold start, Redis may not have
+#   received the injected REDIS_URL yet, causing a 503 -> healthcheck failure.
+#   /health/live is a pure liveness probe — always 200 while the process is alive.
+#   We validate real connectivity via /health AFTER the service is running.
+healthcheckPath = "/health/live"
 
 # WHY 300 seconds:
 #   Neon serverless Postgres has a ~30s cold start after idle.
