@@ -1094,7 +1094,13 @@ def _verdict_to_review_event(verdict: ReviewVerdict | None) -> ReviewEvent:
     if verdict == ReviewVerdict.APPROVE:
         return ReviewEvent.APPROVE
     elif verdict == ReviewVerdict.REQUEST_CHANGES:
-        return ReviewEvent.REQUEST_CHANGES
+        # WHY COMMENT not REQUEST_CHANGES:
+        #   GitHub rejects REQUEST_CHANGES when the reviewer is the same user
+        #   who opened the PR (HTTP 422: "Can not request changes on your own
+        #   pull request"). In production with a dedicated bot account (Phase 16)
+        #   this would be REQUEST_CHANGES. For now COMMENT carries the same full
+        #   verdict body + all findings and is always accepted by the API.
+        return ReviewEvent.COMMENT
     else:
         # NEEDS_HUMAN_REVIEW or None -> post as COMMENT
         # Does not block merge; signals uncertainty clearly.
