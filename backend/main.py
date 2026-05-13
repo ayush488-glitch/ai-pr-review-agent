@@ -50,6 +50,7 @@ from backend.webhook_receiver.router import router as webhook_router
 # Phase 3 REST API routers
 from backend.api.reviews import router as reviews_router
 from backend.api.queue import router as queue_router
+from backend.api.hitl_router import hitl_router       # Phase 19: HITL queue + dispute
 
 # Phase 12 circuit breaker registry — surfaced in /health
 from backend.reliability.circuit_breaker import list_breaker_summaries
@@ -228,9 +229,9 @@ app.include_router(webhook_router)        # POST /webhook/github
 # Phase 3 REST API routers
 app.include_router(reviews_router)        # GET /api/v1/reviews, GET /api/v1/reviews/{id}
 app.include_router(queue_router)          # GET /api/v1/queue
+app.include_router(hitl_router)           # Phase 19: GET /api/v1/hitl/queue, POST /api/v1/hitl/{id}/decision
 
 # TODO: add as phases progress
-# app.include_router(hitl_router)         # POST /api/v1/queue/{id}/approve, /reject  (Phase 19)
 # app.include_router(auth_router)         # POST /api/v1/auth/login, GET /api/v1/auth/me (Phase 11)
 
 

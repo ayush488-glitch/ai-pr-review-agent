@@ -742,10 +742,47 @@ async def post_review(state: PRReviewState) -> dict[str, Any]:
             state["human_review_reason"],
             state["workflow_id"],
         )
-        # TODO (Phase 9): await hitl_queue.enqueue(
-        #     workflow_id=state["workflow_id"],
-        #     reason=state["human_review_reason"],
-        # )
+
+        # Phase 19: Enqueue to HITL queue (Postgres + Redis).
+        # This replaces the TODO stub. The review is persisted BEFORE this
+        # function returns so the operator has a durable record.
+        #
+        # DEPENDENCY IMPORT NOTE:
+        # We import here (not at module top) to avoid circular imports.
+        # nodes.py -> hitl.queue -> database.models — clean inward dependency.
+        # (Clean-Architecture Dependency-Rule: "source code deps point inward.")
+        try:
+            from backend.hitl.queue import enqueue_hitl_review
+            from backend.memory.redis_client import get_redis_client
+
+            redis_client = await get_redis_client()
+            hitl_id = await enqueue_hitl_review(
+                redis_client=redis_client,
+                review_id=state["workflow_id"],
+                repo_full_name=state["repo_full_name"],
+                pr_number=state["pr_number"],
+                agent_verdict=(
+                    state["verdict"].value if state["verdict"] else "needs_human_review"
+                ),
+                escalation_reason=state["human_review_reason"],
+                findings_snapshot=state.get("final_findings", []),
+                overall_confidence=state.get("overall_confidence", 0.0),
+            )
+            logger.info(
+                "post_review | hitl_enqueued | hitl_id=%s workflow=%s",
+                hitl_id, state["workflow_id"],
+            )
+        except Exception as hitl_err:
+            # Non-fatal: HITL enqueue failure should not crash the whole pipeline.
+            # The review result is still valid; the operator will need to manually
+            # check the logs and enqueue from Postgres pending rows.
+            # (Stability-Patterns.md: "Failures are inevitable. Contain the damage.")
+            logger.error(
+                "post_review | hitl_enqueue_failed | workflow=%s error=%s | "
+                "review result not persisted to HITL queue",
+                state["workflow_id"], hitl_err,
+            )
+
         return {
             "review_posted": False,
             "github_review_id": None,

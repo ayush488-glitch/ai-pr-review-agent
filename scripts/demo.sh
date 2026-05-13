@@ -205,9 +205,56 @@ echo "$FULL_REVIEW" | jq '{
 }'
 
 success "Demo complete."
+
+# ---------------------------------------------------------------------------
+# Step 6: Check HITL queue
+# ---------------------------------------------------------------------------
+header "Step 6: Checking HITL queue"
+
+HITL_QUEUE=$(curl -s \
+  -H "X-API-Key: $API_KEY" \
+  "${API_BASE}/api/v1/hitl/queue")
+
+HITL_COUNT=$(echo "$HITL_QUEUE" | jq '.items | length' 2>/dev/null || echo "0")
+info "Pending HITL items: $HITL_COUNT"
+
+if [[ "$HITL_COUNT" -gt 0 ]]; then
+  echo "$HITL_QUEUE" | jq '[.items[] | {id: .id, repo: .repo_full_name, pr: .pr_number, agent_verdict: .agent_verdict, reason: .escalation_reason, confidence: .overall_confidence}]'
+
+  # Step 7: Submit a HITL decision on the first pending item (demo mode)
+  header "Step 7: Submitting demo HITL decision (approve)"
+
+  HITL_ID=$(echo "$HITL_QUEUE" | jq -r '.items[0].id')
+  info "Approving HITL item: $HITL_ID"
+
+  DECISION_RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X POST "${API_BASE}/api/v1/hitl/${HITL_ID}/decision" \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: $API_KEY" \
+    -d "{
+      \"human_verdict\": \"approve\",
+      \"reason\": \"Demo: reviewed and approved by demo script\",
+      \"reviewer_id\": \"demo-script\"
+    }")
+
+  DECISION_BODY=$(echo "$DECISION_RESPONSE" | python3 -c "import sys; lines=sys.stdin.read().splitlines(); print('\n'.join(lines[:-1]))")
+  DECISION_CODE=$(echo "$DECISION_RESPONSE" | tail -n1)
+
+  if [[ "$DECISION_CODE" == "200" ]]; then
+    success "HITL decision submitted (HTTP $DECISION_CODE)"
+    echo "$DECISION_BODY" | jq '{hitl_id: .hitl_review_id, previous_status: .previous_status, new_status: .new_status, posted_to_github: .posted_to_github}'
+  else
+    warn "HITL decision response (HTTP $DECISION_CODE): $DECISION_BODY"
+  fi
+else
+  info "No items in HITL queue — review was auto-posted (thresholds not exceeded)."
+  info "To trigger HITL: lower confidence in fixture or add more CRITICAL findings."
+fi
+
 echo ""
 echo "More commands:"
 echo "  View all reviews:  curl -H 'X-API-Key: $API_KEY' ${API_BASE}/api/v1/reviews | jq"
-echo "  View HITL queue:   curl -H 'X-API-Key: $API_KEY' ${API_BASE}/api/v1/queue | jq"
+echo "  View HITL queue:   curl -H 'X-API-Key: $API_KEY' ${API_BASE}/api/v1/hitl/queue | jq"
+echo "  Rebuild queue:     curl -X POST -H 'X-API-Key: $API_KEY' ${API_BASE}/api/v1/hitl/queue/rebuild | jq"
 echo "  Service health:    curl ${API_BASE}/health | jq"
 echo "  API docs:          open ${API_BASE}/docs"

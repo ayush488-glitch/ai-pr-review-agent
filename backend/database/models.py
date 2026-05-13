@@ -494,3 +494,305 @@ class RepoFileIndexRecord(Base):
             f"<RepoFileIndexRecord repo={self.repo_full_name} "
             f"path={self.file_path} sha={self.file_sha[:8]}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# HITLReview
+#
+# One row per review that was escalated to the Human-in-the-Loop queue.
+#
+# DESIGN DECISIONS:
+#
+# 1. SEPARATE TABLE (not a column on PRReviewRecord):
+#    (Clean-Architecture.md wiki: "Entities change for their own reasons.")
+#    PRReviewRecord tracks the automated review lifecycle.
+#    HITLReview tracks the human decision lifecycle.
+#    They evolve at different rates and for different reasons.
+#    Coupling them in one table violates Single Responsibility.
+#
+# 2. SYSTEM OF RECORD (Derived-Data-Systems.md wiki):
+#    Postgres is the system of record for HITL state.
+#    Redis holds the live queue (derived, ephemeral). If Redis is lost,
+#    the queue can be rebuilt from HITLReview rows with status='pending'.
+#
+# 3. ATOMIC DISPUTE (Transactions-and-Isolation.md wiki):
+#    Human override (approve/reject/edit) is a read-modify-write on this row.
+#    It must be wrapped in a single transaction to avoid write skew where
+#    two concurrent reviewers both read status='pending' and both claim it.
+#    dispute.py uses SELECT FOR UPDATE to serialize concurrent reviewers.
+#
+# 4. VARCHAR(128) PK (demo-day-readiness Bug #1):
+#    id = str(uuid.uuid4()) — pure UUID, 36 chars. VARCHAR(128) gives headroom.
+#    review_id = workflow_id format (owner/repo:pr:sha) — up to 128 chars.
+# ---------------------------------------------------------------------------
+class HITLReview(Base):
+    """
+    A PR review that was escalated to the Human-in-the-Loop queue.
+
+    Created when aggregate_results determines the review cannot be auto-posted
+    (3+ CRITICAL agents, low confidence, security agent failure, etc.).
+    The human reviewer reads this row, makes a decision, and records it here.
+    That decision is then forwarded to GitHub by the dispute handler.
+    """
+
+    __tablename__ = "hitl_reviews"
+
+    # UUID primary key — pure UUID, not the workflow_id format.
+    # WHY SEPARATE UUID AND NOT workflow_id AS PK?
+    # A single PR can be escalated multiple times (e.g. re-review after fix).
+    # workflow_id is unique per review run, not per HITL escalation event.
+    # Using a UUID PK lets us have multiple HITL rows per workflow_id safely.
+    id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+        comment="UUID PK for this HITL escalation event.",
+    )
+
+    # The workflow_id of the automated review that triggered this escalation.
+    # Format: "owner/repo:pr_number:commit_sha" — up to 128 chars.
+    # (demo-day-readiness Bug #1: VARCHAR(128) not VARCHAR(36))
+    review_id: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        index=True,
+        comment="workflow_id of the PRReviewRecord that triggered escalation.",
+    )
+
+    # Denormalized for fast per-repo queue queries (avoids JOIN to pr_review_records).
+    # (Polyglot-Persistence.md: "Denormalize hot query paths when join cost exceeds storage.")
+    repo_full_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        index=True,
+        comment="Denormalized repo name for efficient per-repo queue queries.",
+    )
+
+    pr_number: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        comment="PR number within the repo.",
+    )
+
+    # The verdict produced by the automated agents.
+    # This is what the human is being asked to approve, reject, or override.
+    # Values: "approve", "request_changes", "needs_human_review"
+    agent_verdict: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        comment="Agent-produced verdict being reviewed by the human.",
+    )
+
+    # The human's final verdict after review. NULL until the human acts.
+    # Values: "approve", "request_changes", "dismiss"
+    human_verdict: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        default=None,
+        comment="Human override verdict. Null until reviewer acts.",
+    )
+
+    # Free-text reason the human provided for their decision.
+    # Required on rejection so we can build training signal (Phase 20).
+    human_reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        comment="Human reviewer's explanation for their decision. Required on override.",
+    )
+
+    # Who reviewed this item. Stored as a string (email, GitHub handle, etc.)
+    # NULL until someone claims and resolves it.
+    reviewer_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        default=None,
+        comment="Identity of the human who reviewed this item.",
+    )
+
+    # HITL lifecycle status.
+    # Values: "pending" -> "in_review" -> "approved" / "rejected" / "dismissed"
+    # (Clean-Architecture Business-Rules: status machine is business logic,
+    #  not database logic — enforced in dispute.py Use Case layer.)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        index=True,
+        comment="HITL lifecycle: pending / in_review / approved / rejected / dismissed.",
+    )
+
+    # WHY the automated system escalated this review.
+    # Populated by escalation.py from the aggregate_results output.
+    escalation_reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        comment="Why the automated system escalated: e.g. '3+ CRITICAL agents'.",
+    )
+
+    # The full findings payload (JSON serialized) at time of escalation.
+    # Stored so the human reviewer has context without querying another table.
+    # (Polyglot-Persistence.md: "self-contained document = one query is sufficient.")
+    findings_snapshot: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        comment="JSON-serialized findings at escalation time. Self-contained for reviewer UI.",
+    )
+
+    # Overall confidence score from the automated agents (0.0 to 1.0).
+    overall_confidence: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        comment="Agent ensemble confidence at escalation time.",
+    )
+
+    # Whether the human's decision has been posted back to GitHub.
+    # After human approves/rejects, the dispute handler posts to GitHub and sets this True.
+    posted_to_github: Mapped[bool] = mapped_column(
+        Integer,   # SQLite-compatible boolean as INTEGER
+        nullable=False,
+        default=0,
+        comment="1 if the human verdict has been posted to GitHub.",
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        comment="UTC timestamp when this item entered the HITL queue.",
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        comment="UTC timestamp of last status update.",
+    )
+
+    # When the human made their decision. NULL until resolved.
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+        comment="UTC timestamp when the human made their decision.",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<HITLReview id={self.id} repo={self.repo_full_name} "
+            f"pr={self.pr_number} status={self.status} "
+            f"agent_verdict={self.agent_verdict} human_verdict={self.human_verdict}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HITLFeedback
+#
+# Training signal table — one row per human decision recorded as a labelled
+# example for Phase 20 (Continuous Learning).
+#
+# DESIGN (Derived-Data-Systems.md wiki):
+#   This is DERIVED data. Source of truth is HITLReview.
+#   It reformats the human decision into a shape suitable for fine-tuning datasets.
+#   Can be rebuilt from HITLReview rows at any time.
+#
+# PHASE 20 NOTE:
+#   Phase 20 reads this table to build fine-tune datasets.
+#   Schema must remain stable from Phase 19 onward.
+#   Add columns additively (Encoding-and-Schema-Evolution.md: "adding is always safe").
+# ---------------------------------------------------------------------------
+class HITLFeedback(Base):
+    """
+    Labelled training signal derived from a human HITL decision.
+
+    Written by feedback.py immediately after a human resolves a HITLReview.
+    Read by Phase 20's reflection loop to detect systematic agent errors
+    and build fine-tuning datasets.
+    """
+
+    __tablename__ = "hitl_feedback"
+
+    id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+        comment="UUID PK.",
+    )
+
+    # The HITLReview that produced this feedback signal.
+    hitl_review_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("hitl_reviews.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="FK to the parent HITLReview.",
+    )
+
+    # Denormalized identifiers for dataset queries without JOINs.
+    repo_full_name: Mapped[str] = mapped_column(
+        String(255), nullable=False,
+        comment="Denormalized repo name.",
+    )
+    pr_number: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+        comment="PR number.",
+    )
+
+    # The key comparison: what did agents say vs what did human say?
+    # This delta is the learning signal.
+    agent_verdict: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="What the agents decided.",
+    )
+    human_verdict: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="What the human decided (the ground truth label).",
+    )
+
+    # Was the human decision an OVERRIDE (agent wrong) or CONFIRMATION (agent right)?
+    # "override"     = human changed the verdict
+    # "confirmation" = human agreed with agent
+    # "dismiss"      = human dismissed without a verdict (inconclusive)
+    # Phase 20 uses "override" rows to detect systematic agent errors.
+    feedback_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        index=True,
+        comment="override / confirmation / dismiss — the type of human signal.",
+    )
+
+    # Human's free-text reason. Especially valuable for overrides.
+    # Phase 20 uses this to cluster override reasons and surface patterns.
+    reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        comment="Human's stated reason for their decision.",
+    )
+
+    # The full diff snippet or PR context at decision time.
+    # Stored so Phase 20 can build (input, label) pairs without re-fetching GitHub.
+    context_snapshot: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        comment="PR diff/context snapshot at decision time, for offline dataset construction.",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        comment="UTC timestamp when this feedback was recorded.",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<HITLFeedback id={self.id} type={self.feedback_type} "
+            f"agent={self.agent_verdict} human={self.human_verdict}>"
+        )
