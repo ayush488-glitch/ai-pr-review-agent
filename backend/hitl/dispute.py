@@ -313,10 +313,13 @@ def _human_verdict_to_github_event(human_verdict: str) -> str:
     (demo-day-readiness pitfall #35: GitHub 422 when reviewer == PR author.)
     """
     # TODO (Phase 19 proper): detect whether GITHUB_BOT_ACCOUNT is set.
-    # If bot account configured, use REQUEST_CHANGES for reject verdicts.
-    # For now, always COMMENT — same behaviour as Phase 8/18.
+    # If bot account configured, use APPROVE / REQUEST_CHANGES.
+    # For now, always COMMENT — GitHub returns 422 if reviewer == PR author,
+    # which is the case when running with the developer's own GITHUB_TOKEN.
+    # The DB still records the true human_verdict; only the GitHub-visible
+    # event is downgraded to COMMENT to avoid 422.
     mapping = {
-        "approve": "APPROVE",
+        "approve": "COMMENT",          # COMMENT until dedicated bot account
         "request_changes": "COMMENT",  # COMMENT until dedicated bot account
         "dismiss": "COMMENT",
     }
