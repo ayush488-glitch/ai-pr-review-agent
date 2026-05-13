@@ -296,10 +296,29 @@ class PostReviewResponse(BaseModel):
 
     @classmethod
     def from_github_response(cls, data: dict) -> "PostReviewResponse":
-        """Constructs PostReviewResponse from GitHub's API JSON."""
+        """Constructs PostReviewResponse from GitHub's API JSON.
+
+        GitHub returns review state in past-tense form (APPROVED / CHANGES_REQUESTED /
+        COMMENTED / DISMISSED / PENDING) — different from the request 'event' values
+        (APPROVE / REQUEST_CHANGES / COMMENT). Map response state back to the
+        ReviewEvent enum we use in code.
+        """
+        state_map = {
+            "APPROVED": ReviewEvent.APPROVE,
+            "CHANGES_REQUESTED": ReviewEvent.REQUEST_CHANGES,
+            "COMMENTED": ReviewEvent.COMMENT,
+            "DISMISSED": ReviewEvent.COMMENT,   # treat as commentary
+            "PENDING": ReviewEvent.COMMENT,
+            # also accept canonical request-form values (defensive)
+            "APPROVE": ReviewEvent.APPROVE,
+            "REQUEST_CHANGES": ReviewEvent.REQUEST_CHANGES,
+            "COMMENT": ReviewEvent.COMMENT,
+        }
+        raw_state = data.get("state", "COMMENTED")
+        mapped = state_map.get(raw_state, ReviewEvent.COMMENT)
         return cls(
             id=data["id"],
-            state=ReviewEvent(data["state"]),
+            state=mapped,
             submitted_at=data.get("submitted_at"),
             html_url=data.get("html_url"),
         )
