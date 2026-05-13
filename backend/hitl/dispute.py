@@ -148,9 +148,12 @@ async def resolve_dispute(
     # (Transactions-and-Isolation.md: "Lock before read-modify-write.")
     #
     # NOTE: with_for_update() requires the session to be in a transaction.
-    # The caller (hitl_router.py) must NOT use autocommit sessions.
-    # FastAPI's get_db() opens a session and commits on close — compatible.
-    async with session.begin():
+    # FastAPI's get_db() yields a session with autobegin — the outer transaction
+    # is already started on first use. Calling session.begin() again raises
+    # InvalidRequestError. Use begin_nested() (SAVEPOINT) instead so we can
+    # flush atomically without fighting the outer autobegin transaction.
+    # We commit the outer transaction explicitly after the nested block exits.
+    async with session.begin_nested():
         result = await session.execute(
             select(HITLReview)
             .where(HITLReview.id == request.hitl_review_id)
@@ -184,10 +187,13 @@ async def resolve_dispute(
         hitl_review.reviewer_id = request.reviewer_id
         hitl_review.resolved_at = datetime.now(timezone.utc)
 
-        # Step 5: Commit — DB state is now authoritative.
-        # feedback and GitHub post happen AFTER this commit.
+        # Step 5: Flush within savepoint — savepoint commits on nested block exit.
         # (demo-day-readiness Bug #5 pattern: save first, post second.)
-        await session.flush()  # within begin() context, commit happens on exit
+        await session.flush()
+
+    # Commit the outer autobegin transaction so the DB state is durable
+    # before we do GitHub post + feedback recording.
+    await session.commit()
 
     logger.info(
         "hitl_dispute | resolved | hitl_id=%s status=%s->%s "
