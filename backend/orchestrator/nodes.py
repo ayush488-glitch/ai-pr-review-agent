@@ -753,11 +753,10 @@ async def post_review(state: PRReviewState) -> dict[str, Any]:
         # (Clean-Architecture Dependency-Rule: "source code deps point inward.")
         try:
             from backend.hitl.queue import enqueue_hitl_review
-            from backend.memory.redis_client import get_redis_client
+            from backend.memory.redis_client import redis_client as _rc
 
-            redis_client = await get_redis_client()
             hitl_id = await enqueue_hitl_review(
-                redis_client=redis_client,
+                redis_client=_rc._pool,
                 review_id=state["workflow_id"],
                 repo_full_name=state["repo_full_name"],
                 pr_number=state["pr_number"],
