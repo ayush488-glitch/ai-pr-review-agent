@@ -626,7 +626,7 @@ async def aggregate_results(state: PRReviewState) -> dict[str, Any]:
         1 for r in verdict_records
         if r.succeeded and r.verdict == AgentVerdict.CRITICAL_BLOCK
     )
-    if critical_block_count >= 3:
+    if critical_block_count >= 2:
         # WHY 3+ not 2+:
         #   With threshold=2, a PR containing real security issues (SQL injection,
         #   PCI violations etc.) correctly triggers security+quality CRITICAL, but

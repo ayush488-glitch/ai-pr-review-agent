@@ -64,7 +64,7 @@ class EscalationResult:
 # Escalation thresholds (module-level constants so they can be overridden
 # in tests without monkey-patching buried logic)
 # ---------------------------------------------------------------------------
-CRITICAL_AGENT_THRESHOLD = 3   # rule2: 3+ agents CRITICAL -> HITL
+CRITICAL_AGENT_THRESHOLD = 2   # rule2: 2+ agents CRITICAL -> HITL
 CONFIDENCE_THRESHOLD = 0.40    # rule3: confidence < 0.40  -> HITL
 MIN_SUCCESSFUL_AGENTS = 2      # rule4: <2 successful       -> HITL
 
