@@ -218,28 +218,54 @@ async def resolve_dispute(
     # We attempt to post the human's verdict to GitHub as a PR review.
     # If GitHub fails (401, 422, 404), we log and continue — the human decision
     # is already committed to Postgres. The operator can retry via the retry endpoint.
+    #
+    # Real method: github_client.post_pr_review(repo, pr_number, payload: PostReviewPayload).
+    # PostReviewPayload requires commit_id (head SHA). HITLReview.review_id has
+    # format "owner/repo:pr_number:commit_sha" — extract the SHA from there.
     posted = False
     try:
+        from backend.integrations.github_models import (
+            PostReviewPayload,
+            ReviewEvent,
+        )
+
         # Map human verdict to GitHub review event.
         # (demo-day-readiness pitfall #35: REQUEST_CHANGES fails when reviewer == PR author.
         #  For HITL we use the same bot account rule. If bot account not set up,
         #  fall back to COMMENT as we did in Phase 8/18.)
-        github_event = _human_verdict_to_github_event(request.human_verdict)
+        github_event_str = _human_verdict_to_github_event(request.human_verdict)
+        github_event = ReviewEvent(github_event_str)
         body = _build_github_review_body(
             hitl_review=hitl_review,
             human_verdict=request.human_verdict,
             reason=request.reason,
             reviewer_id=request.reviewer_id,
         )
-        await github_client.post_review(
-            repo_full_name=hitl_review.repo_full_name,
-            pr_number=hitl_review.pr_number,
-            event=github_event,
+
+        # Extract commit SHA from review_id (format: owner/repo:pr:sha).
+        # Fallback: empty string -> GitHub uses latest HEAD.
+        commit_id = ""
+        try:
+            parts = hitl_review.review_id.split(":")
+            if len(parts) >= 3:
+                commit_id = parts[2]
+        except Exception:
+            commit_id = ""
+
+        payload = PostReviewPayload(
+            commit_id=commit_id,
             body=body,
+            event=github_event,
             comments=[],   # no inline comments (Phase 17 restores those)
         )
+
+        await github_client.post_pr_review(
+            repo_full_name=hitl_review.repo_full_name,
+            pr_number=hitl_review.pr_number,
+            payload=payload,
+        )
+
         # Mark posted in DB (non-atomic update — best effort).
-        session_factory = session.get_bind()  # reuse bound engine
         from backend.database.postgres import get_session_factory as _sf
         async with _sf()() as update_session:
             async with update_session.begin():
@@ -253,7 +279,7 @@ async def resolve_dispute(
         posted = True
         logger.info(
             "hitl_dispute | posted_to_github | hitl_id=%s pr=%d event=%s",
-            request.hitl_review_id, hitl_review.pr_number, github_event,
+            request.hitl_review_id, hitl_review.pr_number, github_event_str,
         )
     except Exception as gh_err:
         logger.warning(

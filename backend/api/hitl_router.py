@@ -228,11 +228,14 @@ async def submit_decision(
     # Import GitHub client here to avoid circular import at module load.
     # The GitHub client is a detail (delivery mechanism) from Clean-Architecture's
     # perspective — it belongs outside the Use Case layer.
-    from backend.github.client import GitHubClient
-    from backend.core.config import get_settings
+    #
+    # Real module path: backend.integrations.github_client (NOT backend.github.client).
+    # GitHubClient takes a Settings object and is an async context manager
+    # (httpx.AsyncClient connection pool lifecycle).
+    from backend.integrations.github_client import GitHubClient
+    from backend.config import get_settings
 
     settings = get_settings()
-    github_client = GitHubClient(token=settings.github_token)
 
     request = DisputeRequest(
         hitl_review_id=hitl_id,
@@ -242,11 +245,12 @@ async def submit_decision(
     )
 
     try:
-        result: DisputeResult = await resolve_dispute(
-            session=session,
-            github_client=github_client,
-            request=request,
-        )
+        async with GitHubClient(settings) as github_client:
+            result: DisputeResult = await resolve_dispute(
+                session=session,
+                github_client=github_client,
+                request=request,
+            )
     except HITLReviewNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
