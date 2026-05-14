@@ -165,7 +165,7 @@ async def list_reviews_endpoint(
 # =============================================================================
 
 @router.get(
-    "/reviews/{review_id}",
+    "/reviews/{review_id:path}",
     response_model=ReviewDetail,
     summary="Get PR review detail",
     description=(
