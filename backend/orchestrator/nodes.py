@@ -476,7 +476,7 @@ async def aggregate_results(state: PRReviewState) -> dict[str, Any]:
     WIKI: Confidence-Weighted-Voting.md — "Never silently resolve disagreements.
     Expose them in audit logs so conflicts are traceable."
     """
-    from backend.agents.contracts import AgentVerdict, VerdictRecord, AggregationResult
+    from backend.agents.contracts import AgentVerdict, VerdictRecord
 
     results: list[AgentResultState] = state["agent_results"]
     threshold = state["confidence_threshold"]

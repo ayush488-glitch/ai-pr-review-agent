@@ -66,9 +66,6 @@ def test_review_event_dot_naming_convention():
 
 from backend.observability.tracing import (
     TraceContext,
-    TraceSpan,
-    async_traced,
-    get_current_trace,
     traced,
 )
 
@@ -144,9 +141,7 @@ def test_trace_context_cost_rollup():
 # ─────────────────────────────────────────────────────────────────────────────
 
 from backend.observability.logging import (
-    StructuredLogger,
     get_logger,
-    log_agent_verdict,
     log_llm_call,
     log_review_verdict,
     log_tool_call,
@@ -246,8 +241,6 @@ def test_log_review_verdict_rounds_cost():
 from backend.observability.alerting import (
     AlertLevel,
     AlertManager,
-    AlertRule,
-    FiredAlert,
     MetricSnapshot,
 )
 

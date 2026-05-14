@@ -31,34 +31,26 @@ import pytest
 from backend.security.masking import (
     MaskingPolicy,
     MaskingContext,
-    redact_text,
     unmask_text,
-    ALL_KINDS,
 )
 from backend.security.injection_guard import (
     InjectionSeverity,
-    InjectionResult,
     PromptInjectionDetector,
     check_pr_for_injection,
-    INJECTION_PATTERNS,
 )
 from backend.security.rbac import (
     Role,
     Permission,
     RBACPolicy,
     PermissionDeniedError,
-    ROLE_PERMISSIONS,
-    DEFAULT_RBAC_POLICY,
 )
 from backend.security.threat_model import (
     ThreatVector,
     ThreatSeverity,
     RecommendedAction,
-    ThreatScore,
     ThreatAssessment,
     assess_pr_diff,
     add_malformed_webhook_threat,
-    DEFAULT_MAX_DIFF_BYTES,
 )
 
 

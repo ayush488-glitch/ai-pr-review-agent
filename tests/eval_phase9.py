@@ -17,7 +17,6 @@ import json
 import os
 import sys
 import tempfile
-from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,7 +27,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.evaluation.golden_dataset import (
     GoldenPR,
     ExpectedFinding,
-    GOLDEN_DATASET,
     load_golden_dataset,
     get_slice,
 )
@@ -36,10 +34,7 @@ from backend.evaluation.judge import PRReviewJudge, JudgeScore, PASS_THRESHOLD
 from backend.evaluation.regression_gate import (
     RegressionGate,
     EvalResult,
-    SliceMetrics,
     PASS_THRESHOLD as GATE_PASS,
-    SLICE_THRESHOLD,
-    REGRESSION_DELTA,
 )
 
 

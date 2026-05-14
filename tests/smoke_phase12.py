@@ -25,7 +25,6 @@ if REPO_ROOT not in sys.path:
 
 import pytest
 import time
-from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Imports from reliability module
@@ -33,29 +32,21 @@ from unittest.mock import patch
 from backend.reliability.retry import (
     RetryConfig,
     RetryExhaustedError,
-    DEFAULT_LLM_RETRY,
-    DEFAULT_TOOL_RETRY,
     retry_with_backoff,
     async_retry_with_backoff,
-    retryable,
 )
 from backend.reliability.circuit_breaker import (
     BreakerState,
     BreakerConfig,
     CircuitBreaker,
     CircuitOpenError,
-    get_breaker,
-    reset_all_breakers,
 )
 from backend.reliability.timeout import (
-    TimeoutConfig,
     AgentTimeoutError,
-    DEFAULT_TIMEOUTS,
     with_timeout,
     run_agents_with_per_agent_timeout,
 )
 from backend.reliability.idempotency import (
-    IdempotencyRecord,
     InMemoryIdempotencyStore,
     idempotency_guard,
     JobDeduplicator,
