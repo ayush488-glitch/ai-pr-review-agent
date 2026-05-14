@@ -47,8 +47,8 @@ dependencies = [
     # Qdrant client - vector store for RAG
     "qdrant-client>=1.9.0",
 
-    # Python-dotenv - load .env file in local dev
-    "python-dotenv>=1.0.0",
+    # python-dotenv comes in transitively via pydantic-settings. Removed
+    # direct declaration in cleanup pass — see ADR-005.
 
     # OpenTelemetry - Phase 10 Observability & Tracing
     # API is the vendor-neutral facade; SDK provides the in-process implementation.
