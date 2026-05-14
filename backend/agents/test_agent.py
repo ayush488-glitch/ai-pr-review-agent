@@ -25,6 +25,13 @@ class TestAgent(BaseAgent):
     Focus:  Missing tests, untested edge cases, assertion-free tests
     """
 
+    # Tell pytest this is NOT a test class. The class name collides with
+    # pytest's default collection rule (anything starting with "Test"),
+    # but renaming would touch 30+ call sites and the public agent
+    # taxonomy. Wiki ref: pragmatic-programmer/Reversibility — keep the
+    # cheap reversible fix at the boundary.
+    __test__ = False
+
     @property
     def agent_type(self) -> AgentType:
         return AgentType.TEST
