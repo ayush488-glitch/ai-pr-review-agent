@@ -178,6 +178,24 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", description="API key for the REST API. Required in production.")
 
     # -------------------------------------------------------------------------
+    # Phase 16 — Economics & Cost Control
+    # Budget caps for LLM spend. Daily cap is the hard guardrail enforced by
+    # backend.economics.budget.BudgetGuard. Per-review cap is advisory and
+    # surfaced via the economics summary endpoint (informs Phase 20 routing).
+    # (Wiki LLMOps-Essentials.md, "Cost Control":
+    #  "Without cost tracking, a busy agent can run up a $10,000 bill in a day.
+    #   This happens. Budget limits are not optional.")
+    # -------------------------------------------------------------------------
+    daily_budget_usd: float = Field(
+        default=50.0,
+        description="Hard daily LLM spend cap in USD. Agents short-circuit when exceeded.",
+    )
+    per_review_budget_usd: float = Field(
+        default=0.50,
+        description="Advisory per-review spend cap in USD. Surfaced as a metric, not enforced.",
+    )
+
+    # -------------------------------------------------------------------------
     # Derived properties
     # Not read from env vars — computed from other settings.
     # -------------------------------------------------------------------------

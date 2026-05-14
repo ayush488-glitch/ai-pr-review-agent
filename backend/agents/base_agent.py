@@ -251,6 +251,7 @@ class BaseAgent(ABC):
             _repo_name = task.repo_name
             _retrieved_context = task.retrieved_context
             _peer_context = task.peer_context
+            _workflow_id = task.workflow_id
         else:
             _diff = diff
             _pr_title = pr_title
@@ -258,6 +259,7 @@ class BaseAgent(ABC):
             _repo_name = repo_name
             _retrieved_context = retrieved_context
             _peer_context = ()  # no peer context in old-style calls
+            _workflow_id = None  # Phase 16: legacy callers have no workflow id
 
         # STEP 1: Truncate the diff to this agent's context budget.
         truncated_diff = _truncate_to_budget(_diff, config.context_budget_tokens)
@@ -293,6 +295,33 @@ class BaseAgent(ABC):
         )
 
         # STEP 3: Call the LLM.
+        # Phase 16: enforce daily budget cap + tag the call for cost
+        # attribution. BudgetExceededError -> degraded result that triggers
+        # HITL via the existing low-confidence escalation path.
+        from backend.economics import BudgetExceededError, BudgetGuard
+        from backend.observability.workflow_context import set_workflow_context
+
+        try:
+            await BudgetGuard().check_daily_budget()
+        except BudgetExceededError as bx:
+            logger.warning(
+                "agent_skipped_budget_exceeded | agent=%s spent=$%.4f cap=$%.2f",
+                agent_name, bx.current_spend_usd, bx.cap_usd,
+            )
+            return AgentOutput(
+                agent_type=self.agent_type,
+                findings=[],
+                confidence=0.3,  # low → triggers HITL escalation aggregator
+                tokens_used=0,
+                error_message=f"daily_budget_exceeded: {bx}",
+                per_verdict=AgentVerdict.CRITICAL_BLOCK,
+            )
+
+        # Tag the call so llm_client persists it with the right (workflow_id,
+        # agent_type) attribution. ContextVar is per-asyncio-task, and each
+        # fan-out agent runs in its own task, so we don't need to reset on
+        # exit — siblings get isolated context automatically.
+        set_workflow_context(workflow_id=_workflow_id, agent_type=agent_name)
         try:
             response: LLMResponse = await self._dispatch_llm_call(
                 config=config,

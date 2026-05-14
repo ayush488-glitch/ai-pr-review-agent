@@ -796,3 +796,113 @@ class HITLFeedback(Base):
             f"<HITLFeedback id={self.id} type={self.feedback_type} "
             f"agent={self.agent_verdict} human={self.human_verdict}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# LLMCallLog (Phase 16 — Economics & Cost Control)
+#
+# One row per LLM API call. Captures token counts, cost, latency, and the
+# (workflow_id, agent_type, model) attribution tuple needed to answer:
+#   - "How much did this PR review cost?"           (group by workflow_id)
+#   - "Which agent burns the most spend?"           (group by agent_type)
+#   - "Which model is the cost outlier?"            (group by model)
+#   - "Are we close to the daily cap?"              (sum by date)
+#
+# WHY A SEPARATE TABLE?
+# (Storage-Engines.md: "Append-only log tables scale linearly; never join hot
+#  paths through them.")
+# Cost data is high-volume (every agent call) and append-only. Keeping it out
+# of pr_review_records means review reads stay fast, and cost analytics can
+# be archived/aggregated independently.
+#
+# NEW TABLE — ADDITIVE CHANGE:
+# create_all_tables() in main.py lifespan creates this on next startup.
+# No Alembic migration needed (Phase 15 still tracks Alembic as a TODO).
+# ---------------------------------------------------------------------------
+class LLMCallLog(Base):
+    """
+    Append-only log of every LLM API call for cost attribution.
+
+    Written fire-and-forget by tools/llm_client.py after each successful call.
+    Failures to persist are logged but never raised — cost telemetry must
+    never break the review pipeline.
+    """
+
+    __tablename__ = "llm_call_log"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+        comment="UUID4 primary key generated client-side.",
+    )
+
+    # Workflow attribution — links cost back to a specific PR review run.
+    # Format: "owner/repo:pr_number:commit_sha" (matches HITLReview.review_id).
+    # Nullable for system calls (e.g. embedding warmups) that have no workflow.
+    workflow_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="Workflow id this call belonged to. NULL for system/non-workflow calls.",
+    )
+
+    # Which specialist agent made the call. e.g. "security", "quality",
+    # "test_coverage", "docs". "system" for non-agent calls.
+    agent_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        index=True,
+        comment="Agent type that made the call. 'system' for non-agent calls.",
+    )
+
+    # Model name as served (response.model_used, may differ from requested).
+    model: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+        comment="Model identifier as actually served by the provider.",
+    )
+
+    # Token counts and cost. cost_usd is computed from the static price table
+    # in tools/llm_client.py at call time; persisting it (rather than recomputing
+    # from tokens later) means historical cost is stable even if prices change.
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.0,
+        comment="Estimated cost in USD at the time of the call.",
+    )
+    latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Whether the response parsed as valid JSON (for JSON-mode calls).
+    # False rows correlate strongly with wasted spend (parser fallback path).
+    is_valid_json: Mapped[bool] = mapped_column(
+        Integer,  # SQLAlchemy maps Bool to small int on most backends; keep portable.
+        nullable=False,
+        default=1,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+        comment="UTC timestamp when the LLM call completed. Indexed for time-window queries.",
+    )
+
+    __table_args__ = (
+        # Composite index for the daily-cap query: WHERE created_at >= ? (today).
+        # Already covered by the single-column index on created_at, but keep an
+        # explicit composite (created_at, agent_type) for the per-agent rollup.
+        Index("ix_llm_call_log_day_agent", "created_at", "agent_type"),
+        Index("ix_llm_call_log_workflow", "workflow_id", "agent_type"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<LLMCallLog id={self.id} workflow={self.workflow_id} "
+            f"agent={self.agent_type} model={self.model} cost=${self.cost_usd:.6f}>"
+        )

@@ -1435,6 +1435,7 @@ async def _call_agent_real(
         retrieved_context=state.get("retrieved_context", ""),
         changed_files=tuple(state.get("changed_files", [])),
         peer_context=(),  # Phase 20: will pass summaries from prior agents here
+        workflow_id=state.get("workflow_id"),  # Phase 16: cost attribution
     )
 
     # Call analyze() with the new typed contract (task= kwarg).

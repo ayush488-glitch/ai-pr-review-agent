@@ -247,6 +247,20 @@ class AgentTask:
     # Stored as tuple (immutable) — each element is a PeerFindingSummary.
     peer_context: tuple["PeerFindingSummary", ...] = field(default_factory=tuple)
 
+    # -------------------------------------------------------------------------
+    # Telemetry / cost attribution (Phase 16)
+    # -------------------------------------------------------------------------
+
+    # Workflow ID for cost attribution and tracing.
+    # Source: PRReviewState["workflow_id"]
+    # Used by: BaseAgent.analyze() to set the workflow context so that LLM
+    #          calls made inside the agent persist with the correct
+    #          (workflow_id, agent_type) attribution in LLMCallLog.
+    # Optional + defaulted so existing AgentTask construction sites that don't
+    # pass it keep working — the LLM call simply records workflow_id=NULL,
+    # which the economics summary endpoint already handles.
+    workflow_id: str | None = None
+
 
 # =============================================================================
 # VerdictRecord

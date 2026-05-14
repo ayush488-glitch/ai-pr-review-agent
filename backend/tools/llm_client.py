@@ -50,8 +50,45 @@ import anthropic
 import openai
 
 from backend.core.exceptions import AgentError
-
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 16 — fire-and-forget cost log writer.
+#
+# Called after each successful LLM call. Reads the active workflow context
+# (set by base_agent.analyze) so we never have to thread a workflow_id arg
+# through every retry path. Failures here are swallowed inside
+# record_llm_call so a DB hiccup cannot break the review pipeline.
+# ---------------------------------------------------------------------------
+async def _persist_call_log(
+    *,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+    latency_seconds: float,
+    is_valid_json: bool,
+) -> None:
+    try:
+        # Lazy imports to avoid circular import at module load time
+        # (economics imports models, models import Base, Base depends on settings).
+        from backend.economics import record_llm_call
+        from backend.observability.workflow_context import get_workflow_context
+        ctx = get_workflow_context()
+        await record_llm_call(
+            workflow_id=ctx.workflow_id,
+            agent_type=ctx.agent_type,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            latency_ms=latency_seconds * 1000.0,
+            is_valid_json=is_valid_json,
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("llm_call_log_helper_failed | error=%s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Token cost table (USD per 1000 tokens, as of mid-2025)
@@ -246,6 +283,15 @@ class LLMClient:
                     model, input_tokens, output_tokens, latency, cost,
                 )
 
+                await _persist_call_log(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=cost,
+                    latency_seconds=latency,
+                    is_valid_json=is_valid_json,
+                )
+
                 return LLMResponse(
                     content=parsed,
                     input_tokens=input_tokens,
@@ -399,6 +445,15 @@ class LLMClient:
                     "anthropic_call | model=%s input_tokens=%d output_tokens=%d "
                     "latency=%.2fs cost=$%.6f",
                     model, input_tokens, output_tokens, latency, cost,
+                )
+
+                await _persist_call_log(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=cost,
+                    latency_seconds=latency,
+                    is_valid_json=is_valid_json,
                 )
 
                 return LLMResponse(
