@@ -46,6 +46,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     Float,
     ForeignKey,
@@ -186,7 +187,11 @@ class PRReviewRecord(Base):
     #   "Atomicity: only write this ID after GitHub confirms the review."
     #   -> If the GitHub API call fails, save_review() is never called,
     #      so this column never gets a partial value.
+    # NOTE (Phase 16 hotfix): GitHub review IDs have grown past int32 max
+    # (e.g. 4,292,477,140 observed on 2026-05-14). Use BigInteger so future
+    # IDs don't overflow and break review-row persistence.
     github_review_id: Mapped[int | None] = mapped_column(
+        BigInteger,
         nullable=True,
         default=None,
         comment="GitHub review ID from the API response. NULL if routed to HITL or not yet posted.",
