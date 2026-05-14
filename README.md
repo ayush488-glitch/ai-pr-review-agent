@@ -40,27 +40,37 @@ Orchestration engine: LangGraph. See docs/adr/ADR-001-orchestration-engine.md.
 
 ## 20-Phase Build Roadmap
 
-  Phase 0:  Cognitive Design             - what the system thinks, autonomy level, HITL
-  Phase 1:  System Architecture          - module boundaries, dependency rules, ADRs
-  Phase 2:  Frontend Engineering         - dashboard shell, streaming, HITL queue UI
-  Phase 3:  Backend & API Layer          - FastAPI skeleton, webhook receiver, state machine
-  Phase 4:  Workflow Orchestration       - LangGraph graph, parallel fan-out, checkpointing
-  Phase 5:  LLM & Reasoning Layer        - model routing, prompt registry, output schemas
-  Phase 6:  Memory Architecture          - RAG pipeline, hybrid retrieval, freshness
-  Phase 7:  Tooling & Sandboxing         - tool registry, Docker sandbox, capability scoping
-  Phase 8:  Multi-Agent Systems          - 4 specialist agents, contracts, arbitration
-  Phase 9:  Evaluation Systems           - golden dataset, LLM-as-judge, regression gates
-  Phase 10: Observability & Tracing      - OTel spans, token cost attribution, alerts
-  Phase 11: Security Architecture        - threat model, prompt injection, RBAC, audit trail
-  Phase 12: Reliability Engineering      - retries, circuit breakers, idempotency, checkpointing
-  Phase 13: Infrastructure & Deployment  - Docker Compose, k8s manifests, semantic cache
-  Phase 14: Data Engineering             - ingestion pipeline, embedding freshness, schemas
-  Phase 15: Governance & Compliance      - audit logs, explainability, data residency
-  Phase 16: Economics & Cost Control     - token cost tracking, budget caps, routing efficiency
-  Phase 17: Developer Experience         - prompt playground, trace viewer, replay tool
-  Phase 18: CI/CD for AI                 - prompt versioning, eval gates, canary releases
-  Phase 19: Human-in-the-Loop            - approval queue, escalation, dispute API, feedback
-  Phase 20: Continuous Learning          - reflection loop, learning pipeline, convergence
+Status legend: [x] shipped · [~] partial · [ ] deferred (see docs/FUTURE_WORK.md)
+
+  [x] Phase 0:  Cognitive Design             - what the system thinks, autonomy level, HITL
+  [x] Phase 1:  System Architecture          - module boundaries, dependency rules, ADRs
+  [x] Phase 2:  Frontend Engineering         - dashboard shell, streaming, HITL queue UI
+  [x] Phase 3:  Backend & API Layer          - FastAPI skeleton, webhook receiver, state machine
+  [x] Phase 4:  Workflow Orchestration       - LangGraph graph, parallel fan-out, checkpointing
+  [x] Phase 5:  LLM & Reasoning Layer        - model routing, prompt registry, output schemas
+  [x] Phase 6:  Memory Architecture          - RAG pipeline, hybrid retrieval, freshness
+  [x] Phase 7:  Tooling & Sandboxing         - tool registry, Docker sandbox, capability scoping
+  [x] Phase 8:  Multi-Agent Systems          - 4 specialist agents, contracts, arbitration
+  [x] Phase 9:  Evaluation Systems           - golden dataset, LLM-as-judge, regression gates
+  [x] Phase 10: Observability & Tracing      - OTel spans, token cost attribution, alerts
+  [x] Phase 11: Security Architecture        - threat model, prompt injection, RBAC, audit trail
+  [x] Phase 12: Reliability Engineering      - retries, circuit breakers, idempotency, checkpointing
+  [x] Phase 13: Infrastructure & Deployment  - Docker Compose, k8s manifests, semantic cache
+  [x] Phase 14: Data Engineering             - ingestion pipeline, embedding freshness, schemas
+  [ ] Phase 15: Governance & Compliance      - DEFERRED (see docs/FUTURE_WORK.md, ADR-005)
+  [x] Phase 16: Economics & Cost Control     - token cost tracking, budget caps, routing efficiency
+  [ ] Phase 17: Developer Experience         - DEFERRED (see docs/FUTURE_WORK.md, ADR-005)
+  [x] Phase 18: CI/CD for AI                 - prompt versioning, eval gates, canary releases
+  [x] Phase 19: Human-in-the-Loop            - approval queue, escalation, dispute API, feedback
+  [ ] Phase 20: Continuous Learning          - DEFERRED (see docs/FUTURE_WORK.md, ADR-005)
+
+End-to-end demo verified: webhook -> 4 agents -> aggregator -> GitHub
+post -> DB persist -> /reviews -> /economics. Live on PR #8 of
+ayush488-glitch/test-pr-review-demo.
+
+Live endpoints:
+  Backend:  https://web-production-d9e54.up.railway.app
+  Frontend: localhost:3000 (proxies to prod via NEXT_PUBLIC_API_BASE_URL)
 
 ---
 
