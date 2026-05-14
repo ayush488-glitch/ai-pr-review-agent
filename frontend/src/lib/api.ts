@@ -60,34 +60,8 @@ export const api = {
     req<Paginated<ReviewSummary>>(
       `/api/v1/reviews?limit=${limit}&offset=${offset}`
     ),
-  getReview: async (id: string): Promise<ReviewDetail> => {
-    // Backend route currently doesn't accept "/" in the path param (fix
-    // pushed as 428c1d8 but Railway peak-hour deploy block prevents
-    // rollout). Workaround: fetch the list to confirm existence, then
-    // hit the encoded detail endpoint. Once :path converter is live,
-    // collapse this back to the direct fetch.
-    try {
-      return await req<ReviewDetail>(
-        `/api/v1/reviews/${encodeReviewId(id)}`
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      if (!msg.startsWith("404")) throw err;
-      // Fallback: pull from list + synthesize a minimal detail. Findings
-      // unavailable until BE redeploy lands.
-      const list = await req<Paginated<ReviewSummary>>(
-        `/api/v1/reviews?limit=200`
-      );
-      const hit = list.items.find((r) => r.id === id);
-      if (!hit) throw err;
-      return {
-        ...hit,
-        human_review_reason: "",
-        github_review_id: null,
-        findings: [],
-      } as ReviewDetail;
-    }
-  },
+  getReview: (id: string) =>
+    req<ReviewDetail>(`/api/v1/reviews/${encodeReviewId(id)}`),
 
   hitlQueue: (limit = 50, offset = 0) =>
     req<Paginated<HITLItem>>(
