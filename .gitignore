@@ -57,3 +57,4 @@ qdrant_data/
 # --- Logs ---
 *.log
 logs/
+.hermes/
