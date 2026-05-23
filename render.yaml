@@ -1,19 +1,17 @@
 # render.yaml - Render deployment configuration
-# https://render.com/docs/yaml-spec
+# https://render.com/docs/blueprint-spec
 
 services:
   # Web Service - FastAPI application
   - type: web
     name: ai-pr-review-web
-    runtime: python
-    repo: https://github.com/ayush488-glitch/ai-pr-review-agent
-    branch: main
+    env: python
     plan: free
     buildCommand: pip install -e .
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.13
+        value: 3.10
       - key: GITHUB_WEBHOOK_SECRET
         sync: false
       - key: GITHUB_TOKEN
@@ -56,15 +54,13 @@ services:
   # Worker Service - ARQ async job queue
   - type: worker
     name: ai-pr-review-worker
-    runtime: python
-    repo: https://github.com/ayush488-glitch/ai-pr-review-agent
-    branch: main
+    env: python
     plan: free
     buildCommand: pip install -e .
     startCommand: python3 -m arq backend.job_queue.arq_worker.WorkerSettings
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.13
+        value: 3.10
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_API_BASE_URL
