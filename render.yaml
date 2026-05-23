@@ -1,0 +1,101 @@
+# render.yaml - Render deployment configuration
+# https://render.com/docs/yaml-spec
+
+services:
+  # Web Service - FastAPI application
+  - type: web
+    name: ai-pr-review-web
+    runtime: python
+    repo: https://github.com/ayush488-glitch/ai-pr-review-agent
+    branch: main
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_API_BASE_URL
+        value: https://api.github.com
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION_NAME
+        value: codebase_embeddings
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: SECURITY_PROVIDER
+        value: openai
+      - key: SECURITY_MODEL
+        value: gpt-4o
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MAX_CONCURRENT_REVIEWS
+        value: 3
+      - key: CONFIDENCE_THRESHOLD
+        value: 0.7
+      - key: WORKFLOW_TIMEOUT_SECONDS
+        value: 300
+      - key: API_KEY
+        sync: false
+
+  # Worker Service - ARQ async job queue
+  - type: worker
+    name: ai-pr-review-worker
+    runtime: python
+    repo: https://github.com/ayush488-glitch/ai-pr-review-agent
+    branch: main
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: python3 -m arq backend.job_queue.arq_worker.WorkerSettings
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_API_BASE_URL
+        value: https://api.github.com
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION_NAME
+        value: codebase_embeddings
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: SECURITY_PROVIDER
+        value: openai
+      - key: SECURITY_MODEL
+        value: gpt-4o
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MAX_CONCURRENT_REVIEWS
+        value: 3
+      - key: CONFIDENCE_THRESHOLD
+        value: 0.7
+      - key: WORKFLOW_TIMEOUT_SECONDS
+        value: 300
