@@ -70,6 +70,7 @@ ayush488-glitch/test-pr-review-demo.
 
 Live endpoints:
   Backend:  https://web-production-d9e54.up.railway.app
+  Worker:   https://worker-production-1273.up.railway.app
   Frontend: localhost:3000 (proxies to prod via NEXT_PUBLIC_API_BASE_URL)
 
 ---
