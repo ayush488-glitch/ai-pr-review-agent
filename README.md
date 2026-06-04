@@ -1,10 +1,8 @@
-# AI PR Review Agent x Tiger Cloud
+# AI PR Review Agent
 
-A production-grade AI Pull Request Review Agent built with Tiger Cloud (TimescaleDB) as the unified data spine.
+A production-grade, open source AI Pull Request Review Agent. A developer opens a PR. A webhook fires. Four specialist sub-agents run in parallel — security, code quality, test coverage, docs. Each one reasons over the diff plus codebase context retrieved via semantic search. An aggregator merges findings into a single structured review and posts it back to the PR. Low-confidence findings route to a human approval queue.
 
-This is a sponsored build for [Tiger Data](https://tigerdata.com) — part of a full end-to-end course showing how to wire Tiger Cloud into a real production AI system.
-
-Live CTA: [tigerdata.com/go/kol](https://tigerdata.com/go/kol)
+Every phase has a gate: tests pass, evals pass, a written checkpoint before the next phase begins.
 
 ---
 
@@ -21,11 +19,11 @@ Live CTA: [tigerdata.com/go/kol](https://tigerdata.com/go/kol)
 
 ---
 
-## The Tiger Cloud Spine
+## Data Layer — Tiger Cloud (TimescaleDB)
 
-Most AI projects end up with three separate stores: a vector DB for RAG, a time-series store for traces, and Postgres for structured data. This project collapses all three into one Tiger Cloud Postgres instance.
+Most AI projects end up juggling three separate stores: a vector DB for RAG, a time-series store for traces, and Postgres for structured data. This project uses [Tiger Cloud](https://tigerdata.com) — a managed TimescaleDB instance — to collapse all three into one Postgres database.
 
-One connection pool, one backup policy, one place to reason about data.
+One connection pool. One backup policy. One place to reason about the data.
 
 ### Three roles, one database
 
@@ -246,4 +244,4 @@ prompts/            Versioned prompt files per agent
 
 ---
 
-Built by [Ayush Singh](https://github.com/ayush488-glitch) | Sponsored by [Tiger Data](https://tigerdata.com)
+Built by [Ayush Singh](https://github.com/ayush488-glitch)
