@@ -38,6 +38,8 @@
 #   returned to the pool when done.
 
 import logging
+import pathlib
+import re
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -318,5 +320,100 @@ def get_session_factory() -> async_sessionmaker:
         bind=get_engine(),
         class_=AsyncSession,
         expire_on_commit=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tiger Cloud: asyncpg pool + schema init
+#
+# Tiger Cloud (TimescaleDB) runs alongside the existing SQLAlchemy engine.
+# They share the same physical instance (same TIGER_DATABASE_URL) but use
+# different drivers:
+#   - SQLAlchemy/asyncpg: structured tables (pr_review_records, findings, etc.)
+#   - bare asyncpg pool:  hot paths (agent_events inserts, code_chunks upserts)
+#
+# WHY TWO POOLS?
+# SQLAlchemy's ORM session adds ~2ms overhead per row — fine for structured
+# queries, too expensive for the 50+ telemetry rows emitted per review.
+# The bare asyncpg pool is used only for high-throughput insert paths.
+# ---------------------------------------------------------------------------
+import asyncpg as _asyncpg
+from pgvector.asyncpg import register_vector as _register_vector
+
+_tiger_pool: "_asyncpg.Pool | None" = None
+
+
+def get_tiger_pool() -> "_asyncpg.Pool | None":
+    """
+    Returns the module-level Tiger Cloud asyncpg pool.
+    None if init_tiger_schema() has not been called yet.
+    """
+    return _tiger_pool
+
+
+async def init_tiger_schema() -> None:
+    """
+    Creates the Tiger Cloud asyncpg pool and runs the full schema DDL.
+
+    Called once at startup from main.py lifespan, after init_db().
+    Reads the SQL migration from scripts/migrations/2026-06-tiger-init.sql
+    and executes it idempotently (all statements use IF NOT EXISTS).
+
+    The pool is stored at module level (_tiger_pool) and retrieved via
+    get_tiger_pool() by any module that needs raw asyncpg access.
+    """
+    global _tiger_pool
+    cfg = get_settings()
+    dsn = cfg.tiger_database_url or cfg.database_url
+    # asyncpg wants plain postgresql:// not postgresql+asyncpg:// (that's SQLAlchemy syntax)
+    dsn = dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgresql://")
+
+    # Build the pool with pgvector codec registered on every new connection.
+    async def _init_conn(conn):
+        await _register_vector(conn)
+
+    _tiger_pool = await _asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=10,
+        command_timeout=60,
+        init=_init_conn,
+    )
+
+    # Run the idempotent migration SQL.
+    migration_path = (
+        pathlib.Path(__file__).resolve().parent.parent.parent
+        / "scripts" / "migrations" / "2026-06-tiger-init.sql"
+    )
+    if migration_path.exists():
+        sql = migration_path.read_text()
+        # Split on semicolons, skip comments and blank statements.
+        statements = [
+            s.strip() for s in re.split(r";\s*", sql)
+            if s.strip() and not s.strip().startswith("--")
+        ]
+        async with _tiger_pool.acquire() as conn:
+            for stmt in statements:
+                try:
+                    await conn.execute(stmt)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Tiger migration stmt warning (non-fatal): %s", exc)
+        logger.info("Tiger Cloud schema migration applied | path=%s", migration_path)
+    else:
+        logger.warning("Tiger migration file not found at %s — skipping DDL", migration_path)
+
+    # Wire the singleton into tiger_client module so get_tiger_memory() works.
+    try:
+        from backend.memory import tiger_client as _tc
+        if _tc.tiger_memory is None:
+            from backend.memory.tiger_client import TigerMemoryClient
+            _tc.tiger_memory = TigerMemoryClient(_tiger_pool)
+            logger.info("TigerMemoryClient singleton initialized.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TigerMemoryClient init warning: %s", exc)
+
+    logger.info(
+        "Tiger Cloud pool ready | host=%s",
+        dsn.split("@")[-1].split("/")[0] if "@" in dsn else "local",
     )
 

@@ -23,6 +23,8 @@ async-timeout==5.0.1 ; python_full_version < '3.11.3'
     #   redis
 asyncpg==0.31.0
     # via ai-pr-review-agent
+asyncpg>=0.29.0
+pgvector>=0.3.0
 certifi==2026.4.22
     # via
     #   httpcore
@@ -185,8 +187,6 @@ pyyaml==6.0.3
     # via
     #   langchain-core
     #   uvicorn
-qdrant-client==1.18.0
-    # via ai-pr-review-agent
 redis==5.3.1
     # via
     #   ai-pr-review-agent

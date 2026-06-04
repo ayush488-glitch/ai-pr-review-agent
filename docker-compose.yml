@@ -1,15 +1,13 @@
 # docker-compose.yml — AI PR Review Agent
 #
-# HYBRID MODE: Neon (cloud Postgres) + local Redis + local Qdrant + api + worker
+# HYBRID MODE: Neon (cloud Postgres) + local Redis + api + worker
 #
 # WHY HYBRID:
-#   Postgres -> Neon cloud. Review data persists forever, survives laptop restarts.
+#   Postgres -> Neon cloud (TimescaleDB). Review data persists forever, survives laptop restarts.
 #   Redis    -> local Docker. Job queue, idempotency keys. Ephemeral is fine.
-#   Qdrant   -> local Docker. Code embeddings. Can be rebuilt any time.
 #
 # Neon is accessed via HTTPS (port 5432 over TLS) — works from anywhere.
-# Redis (6380) and Qdrant (6333) cloud ports are blocked on some local networks,
-# so we run them locally until the full cloud deploy in Phase 18.
+# Redis (6379) local port used for job queue.
 #
 # Usage:
 #   docker-compose up --build
@@ -36,24 +34,9 @@ services:
       - prreview_net
 
   # ---------------------------------------------------------------------------
-  # Qdrant — local, ports 6335 (HTTP) and 6336 (gRPC)
-  # ---------------------------------------------------------------------------
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: prreview_qdrant
-    ports:
-      - "6335:6333"
-      - "6336:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    networks:
-      - prreview_net
-
-  # ---------------------------------------------------------------------------
   # API — FastAPI application
   # Postgres -> Neon cloud (from .env DATABASE_URL)
   # Redis    -> local container
-  # Qdrant   -> local container
   # ---------------------------------------------------------------------------
   api:
     build:
@@ -66,10 +49,8 @@ services:
       - .env
     environment:
       # DATABASE_URL comes from .env -> Neon cloud (persistent)
-      # Override Redis and Qdrant to point at local Docker services
+      # Override Redis to point at local Docker service
       REDIS_URL: "redis://redis:6379"
-      QDRANT_URL: "http://qdrant:6333"
-      QDRANT_API_KEY: ""
     depends_on:
       redis:
         condition: service_healthy
@@ -89,8 +70,6 @@ services:
       - .env
     environment:
       REDIS_URL: "redis://redis:6379"
-      QDRANT_URL: "http://qdrant:6333"
-      QDRANT_API_KEY: ""
     depends_on:
       redis:
         condition: service_healthy
@@ -107,6 +86,5 @@ networks:
 # ---------------------------------------------------------------------------
 # Volumes
 # ---------------------------------------------------------------------------
-volumes:
-  qdrant_data:
-    driver: local
+volumes: {}
+

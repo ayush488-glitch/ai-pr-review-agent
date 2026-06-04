@@ -20,6 +20,14 @@ NAMING CONVENTION
 
 from __future__ import annotations
 
+import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+import asyncpg
+
 # StrEnum was added in Python 3.11; provide a compat shim for 3.10.
 try:
     from enum import StrEnum
@@ -28,6 +36,8 @@ except ImportError:
 
     class StrEnum(str, Enum):  # type: ignore[no-redef]
         pass
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewEvent(StrEnum):
@@ -87,3 +97,114 @@ class ReviewEvent(StrEnum):
 
     # Fired when the regression gate blocks a deployment.
     EVAL_GATE_BLOCKED = "eval.gate.blocked"
+
+
+# =============================================================================
+# AgentEvent — Tiger Cloud hypertable row
+#
+# Every span start/end, LLM call, tool call, and decision emits one row
+# into the agent_events hypertable. This is the spine of observability:
+# the trace viewer, audit trail, and cost ledger all read from it.
+#
+# Design principles:
+#   - Fire-and-forget: emit_agent_event() is a background task.
+#     Never awaited on the hot path. A write failure does NOT fail the review.
+#   - Immutable: rows are never updated after insert. Append-only log.
+#   - Cheap: asyncpg executemany, no ORM overhead, no SQLAlchemy session.
+#
+# event_type vocabulary (mirrors ReviewEvent but coarser-grained for the spine):
+#   "span.start"   -- agent execution begins
+#   "span.end"     -- agent execution ends (with outcome + confidence)
+#   "llm.call"     -- single LLM API call (with tokens_in, tokens_out, cost_usd)
+#   "tool.call"    -- tool registry invocation
+#   "decision"     -- aggregator verdict decision
+#   "escalation"   -- HITL queue insertion
+# =============================================================================
+@dataclass
+class AgentEvent:
+    """
+    A single row in the agent_events hypertable.
+
+    Maps directly to the schema in scripts/migrations/2026-06-tiger-init.sql.
+    All time is UTC. span_id is auto-generated if not supplied.
+    """
+    review_id: str
+    agent: str                       # "security" | "quality" | "tests" | "docs" | "aggregator" | "system"
+    event_type: str                  # "span.start" | "span.end" | "llm.call" | "tool.call" | "decision" | "escalation"
+    ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    span_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    parent_span: str | None = None
+    model: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    latency_ms: int | None = None
+    outcome: str | None = None       # "approved" | "request_changes" | "critical_block" | "escalated"
+    confidence: float | None = None  # 0.000 to 1.000
+    payload: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# emit_agent_event
+#
+# Fire-and-forget write to the agent_events hypertable.
+# Called from orchestrator/nodes.py and tools/llm_client.py.
+#
+# WHY NOT USE SQLAlchemy here?
+# The agent_events table is the hot write path — every LLM call, every span.
+# SQLAlchemy ORM adds ~2ms per-row from Python-side hydration. asyncpg
+# execute() is sub-millisecond. At 50 LLM calls per PR review, that is
+# 100ms of pure ORM overhead per review. Not worth it.
+#
+# WHY FIRE-AND-FORGET?
+# A failed telemetry write must never fail the review. The user gets their
+# review comment either way. We log the error and continue.
+# (Reliability Engineering: "observability failures are non-fatal")
+# ---------------------------------------------------------------------------
+_INSERT_SQL = """
+    INSERT INTO agent_events
+        (ts, review_id, agent, span_id, parent_span, event_type,
+         model, tokens_in, tokens_out, cost_usd, latency_ms,
+         outcome, confidence, payload)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+"""
+
+
+async def emit_agent_event(pool: asyncpg.Pool | None, event: AgentEvent) -> None:
+    """
+    Write one AgentEvent row to the agent_events hypertable.
+
+    Fire-and-forget: exceptions are caught and logged, never re-raised.
+    Pass pool=None to silently skip (e.g. in unit tests without Tiger).
+
+    Args:
+        pool:  asyncpg connection pool for Tiger Cloud. None = no-op.
+        event: The AgentEvent row to insert.
+    """
+    if pool is None:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                _INSERT_SQL,
+                event.ts,
+                uuid.UUID(event.review_id) if isinstance(event.review_id, str) else event.review_id,
+                event.agent,
+                uuid.UUID(event.span_id) if isinstance(event.span_id, str) else event.span_id,
+                uuid.UUID(event.parent_span) if isinstance(event.parent_span, str) else event.parent_span,
+                event.event_type,
+                event.model,
+                event.tokens_in,
+                event.tokens_out,
+                event.cost_usd,
+                event.latency_ms,
+                event.outcome,
+                event.confidence,
+                event.payload,   # asyncpg serializes dict -> JSONB automatically
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Never let observability failures crash the review workflow.
+        logger.error(
+            "emit_agent_event failed (non-fatal) | review_id=%s agent=%s event=%s error=%s",
+            event.review_id, event.agent, event.event_type, exc,
+        )

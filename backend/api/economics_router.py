@@ -151,3 +151,110 @@ async def workflow_cost(
         by_agent=rollup.by_agent,
         by_model=rollup.by_model,
     )
+
+
+# =============================================================================
+# Tiger Cloud aggregate endpoints
+# These read from pre-materialized continuous aggregates — sub-millisecond
+# at any scale. No GROUP BY scan over raw rows.
+# =============================================================================
+
+@economics_router.get("/agent-health", summary="Per-agent health from Tiger aggregate")
+async def get_agent_health(
+    minutes: int = Query(default=60, ge=1, le=1440, description="Lookback window in minutes"),
+) -> list[dict]:
+    """
+    Returns per-agent cost, p95 latency, and rejection rate over the last N minutes.
+    Source: agent_health_1m continuous aggregate (TimescaleDB, refreshed every minute).
+    """
+    from backend.database.postgres import get_tiger_pool
+    pool = get_tiger_pool()
+    if pool is None:
+        return []
+    sql = """
+        SELECT
+            bucket::text,
+            agent,
+            COALESCE(llm_calls, 0)         AS llm_calls,
+            COALESCE(cost_usd, 0.0)        AS cost_usd,
+            COALESCE(tokens_in, 0)         AS tokens_in,
+            COALESCE(tokens_out, 0)        AS tokens_out,
+            COALESCE(p95_ms, 0.0)          AS p95_ms,
+            COALESCE(p50_ms, 0.0)          AS p50_ms,
+            COALESCE(rejection_rate, 0.0)  AS rejection_rate,
+            COALESCE(escalation_rate, 0.0) AS escalation_rate
+        FROM agent_health_1m
+        WHERE bucket >= now() - make_interval(mins => $1)
+        ORDER BY bucket DESC, agent
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, minutes)
+    return [dict(r) for r in rows]
+
+
+@economics_router.get("/pr-cost/{review_id}", summary="Per-PR cost from Tiger aggregate")
+async def get_pr_cost(review_id: str) -> dict:
+    """
+    Returns total cost, tokens, agents used, and wall time for a specific PR review.
+    Source: pr_cost_hourly continuous aggregate (TimescaleDB, refreshed every hour).
+    """
+    from backend.database.postgres import get_tiger_pool
+    import uuid
+    pool = get_tiger_pool()
+    if pool is None:
+        return {"review_id": review_id, "total_cost_usd": 0.0, "total_tokens": 0}
+    sql = """
+        SELECT
+            review_id::text,
+            COALESCE(sum(total_cost_usd), 0.0) AS total_cost_usd,
+            COALESCE(sum(total_tokens), 0)      AS total_tokens,
+            COALESCE(max(agents_used), 0)       AS agents_used,
+            COALESCE(max(max_confidence), 0.0)  AS max_confidence
+        FROM pr_cost_hourly
+        WHERE review_id = $1
+        GROUP BY review_id
+    """
+    try:
+        rid = uuid.UUID(review_id)
+    except ValueError:
+        return {"error": "invalid review_id format"}
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, rid)
+    if row is None:
+        return {"review_id": review_id, "total_cost_usd": 0.0, "total_tokens": 0, "note": "no data yet"}
+    return dict(row)
+
+
+@economics_router.get("/daily-summary", summary="24h cost + latency summary from Tiger aggregates")
+async def get_daily_summary() -> dict:
+    """
+    Returns a 24-hour rollup: total cost, total tokens, p95 latency per agent,
+    and rejection rate per agent.
+    Source: agent_health_1m continuous aggregate.
+    """
+    from backend.database.postgres import get_tiger_pool
+    pool = get_tiger_pool()
+    if pool is None:
+        return {"error": "tiger pool not initialized"}
+    sql = """
+        SELECT
+            agent,
+            COALESCE(sum(llm_calls), 0)         AS llm_calls,
+            COALESCE(sum(cost_usd), 0.0)        AS cost_usd,
+            COALESCE(sum(tokens_in), 0)         AS tokens_in,
+            COALESCE(sum(tokens_out), 0)        AS tokens_out,
+            COALESCE(max(p95_ms), 0.0)          AS p95_ms,
+            COALESCE(avg(rejection_rate), 0.0)  AS avg_rejection_rate
+        FROM agent_health_1m
+        WHERE bucket >= now() - INTERVAL '24 hours'
+        GROUP BY agent
+        ORDER BY cost_usd DESC
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql)
+    return {
+        "window": "24h",
+        "agents": [dict(r) for r in rows],
+        "total_cost_usd": sum(float(r["cost_usd"]) for r in rows),
+        "total_tokens": sum(int(r["tokens_in"]) + int(r["tokens_out"]) for r in rows),
+    }

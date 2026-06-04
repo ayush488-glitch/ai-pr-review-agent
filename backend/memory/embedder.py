@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 MAX_EMBED_CHARS = 8_000
 
 # Embedding vector dimensionality for text-embedding-3-small.
-# Must match the Qdrant collection vector size (defined in qdrant_client.py).
+# Must match the Tiger Cloud code_chunks table VECTOR dimension (defined in 2026-06-tiger-init.sql).
 EMBEDDING_DIMENSIONS = 1536
 
 

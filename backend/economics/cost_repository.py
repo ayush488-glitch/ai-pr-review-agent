@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncpg  # noqa: F401 — used in type hints
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -267,3 +268,80 @@ async def get_daily_timeseries(days: int = 30) -> list[DailyPoint]:
         cost, count = buckets.get(key, [0.0, 0])
         points.append(DailyPoint(date=key, cost_usd=round(cost, 6), call_count=int(count)))
     return points
+
+
+# ---------------------------------------------------------------------------
+# Tiger Cloud continuous-aggregate read methods
+# ---------------------------------------------------------------------------
+
+async def get_agent_health(
+    pool: "asyncpg.Pool",
+    minutes: int = 60,
+) -> list[dict]:
+    """
+    Read per-agent health from the agent_health_1m continuous aggregate.
+    Sub-millisecond at any scale — pre-materialized by TimescaleDB.
+    """
+    sql = """
+        SELECT
+            bucket,
+            agent,
+            llm_calls,
+            cost_usd,
+            tokens_in,
+            tokens_out,
+            p95_ms,
+            p50_ms,
+            rejection_rate,
+            escalation_rate
+        FROM agent_health_1m
+        WHERE bucket >= now() - make_interval(mins => $1)
+        ORDER BY bucket DESC, agent
+    """
+    import asyncpg
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, minutes)
+    return [dict(r) for r in rows]
+
+
+async def get_pr_cost(
+    pool: "asyncpg.Pool",
+    review_id: str,
+) -> dict | None:
+    """
+    Read per-PR cost from the pr_cost_hourly continuous aggregate.
+    Returns total cost, tokens, agents used, and wall time for a review.
+    """
+    sql = """
+        SELECT
+            review_id,
+            sum(total_cost_usd)    AS total_cost_usd,
+            sum(total_tokens)       AS total_tokens,
+            max(agents_used)        AS agents_used,
+            max(max_confidence)     AS max_confidence,
+            sum(wall_time)          AS wall_time
+        FROM pr_cost_hourly
+        WHERE review_id = $1
+        GROUP BY review_id
+    """
+    import asyncpg, uuid
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, uuid.UUID(review_id))
+    return dict(row) if row else None
+
+
+async def get_daily_cost_from_tiger(
+    pool: "asyncpg.Pool",
+) -> float:
+    """
+    Total LLM cost over the last 24h from the agent_health_1m aggregate.
+    Used by budget.py BudgetGuard as the authoritative daily spend figure.
+    """
+    sql = """
+        SELECT COALESCE(sum(cost_usd), 0.0) AS total
+        FROM agent_health_1m
+        WHERE bucket >= now() - INTERVAL '24 hours'
+    """
+    import asyncpg
+    async with pool.acquire() as conn:
+        return float(await conn.fetchval(sql))

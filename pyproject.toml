@@ -28,6 +28,7 @@ dependencies = [
 
     # Postgres async driver - for structured review history
     "asyncpg>=0.29.0",
+    "pgvector>=0.3.0",
 
     # ORM for Postgres - SQLAlchemy async mode
     "sqlalchemy[asyncio]>=2.0.0",

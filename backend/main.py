@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse
 from backend.config.settings import get_settings
 from backend.database.postgres import init_db
 from backend.memory.context_retriever import retrieve_context_for_diff  # noqa: F401 (used in routes)
-from backend.memory.qdrant_client import ensure_collection
+from backend.database.postgres import init_tiger_schema  # TIGER: replaces ensure_collection
 from backend.memory.redis_client import redis_client
 from backend.webhook_receiver.router import router as webhook_router
 
@@ -144,23 +144,23 @@ async def lifespan(app: FastAPI):
         logger.warning("Postgres unavailable at startup — will retry on first request: %s", exc)
 
     # -------------------------------------------------------------------------
-    # Phase 6: Qdrant — ensure code_chunks collection exists
+    # Tiger Cloud — init connection pool + run schema migration
     #
-    # ensure_collection() is BEST-EFFORT: returns True/False, never raises.
-    # (See qdrant_client.py for graceful degradation implementation.)
-    # If Qdrant is down at startup:
-    #   - qdrant_ready = False (logged as warning below)
-    #   - The server starts normally
-    #   - RAG context simply returns "" for all reviews (pipeline unaffected)
-    # (Production-Hardening.md: "Optional deps log warning, never crash startup.")
-    qdrant_ready = await ensure_collection()
-    if qdrant_ready:
-        logger.info("Qdrant collection 'code_chunks' ready.")
-    else:
+    # init_tiger_schema() creates the asyncpg pool, registers pgvector codec,
+    # runs the idempotent DDL from scripts/migrations/2026-06-tiger-init.sql,
+    # and wires the TigerMemoryClient singleton.
+    #
+    # WHY BEST-EFFORT (try/except, not fail-fast):
+    #   Tiger Cloud is the memory + events spine, but reviews can technically
+    #   run diff-only if Tiger is temporarily unreachable at cold boot.
+    #   We log the warning and let the /health endpoint surface the error.
+    #   (Production-Hardening.md: "Optional deps log warning, never crash startup.")
+    try:
+        await init_tiger_schema()
+        logger.info("Tiger Cloud ready — memory + events spine online.")
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "Qdrant unavailable at startup — RAG context disabled. "
-            "Reviews will run with diff-only analysis. "
-            "Check QDRANT_URL in .env and ensure Qdrant is running."
+            "Tiger Cloud unavailable at startup — RAG context and events disabled: %s", exc
         )
 
     yield  # <-- server is running, accepting requests
@@ -297,14 +297,18 @@ async def _check_redis() -> str:
         return f"error: {exc}"
 
 
-async def _check_qdrant() -> str:
+async def _check_tiger() -> str:
     """
-    Call Qdrant /healthz via the existing ensure_collection() helper.
-    Returns 'ok' or 'degraded (RAG disabled)'. Never raises.
+    Check Tiger Cloud connection health via TigerMemoryClient.health_check().
+    Returns 'ok' or an error string. Never raises.
     """
     try:
-        ok = await ensure_collection()
-        return "ok" if ok else "degraded (collection missing — RAG disabled)"
+        from backend.memory.tiger_client import get_tiger_memory
+        client = get_tiger_memory()
+        result = await client.health_check()
+        if result.get("status") == "ok":
+            return f"ok (chunks={result.get('chunk_count', 0)})"
+        return f"degraded: {result.get('error', 'unknown')}"
     except Exception as exc:
         return f"error: {exc}"
 
@@ -314,7 +318,7 @@ async def _check_qdrant() -> str:
     tags=["ops"],
     summary="Readiness probe",
     description=(
-        "Checks Postgres, Redis, and Qdrant reachability. "
+        "Checks Postgres, Redis, and Tiger Cloud reachability. "
         "Returns 200 when all services are healthy, 503 when any are degraded."
     ),
 )
@@ -330,7 +334,7 @@ async def health_check() -> JSONResponse:
         "services": {
           "postgres": "ok" | "error: ...",
           "redis":    "ok" | "error: ...",
-          "qdrant":   "ok" | "degraded ..." | "error: ..."
+          "tiger":    "ok" | "degraded ..." | "error: ..."
         },
         "circuit_breakers": [
           {"name": "...", "state": "CLOSED", "failures": 0}, ...
@@ -341,7 +345,7 @@ async def health_check() -> JSONResponse:
     """
     postgres_status = await _check_postgres()
     redis_status = await _check_redis()
-    qdrant_status = await _check_qdrant()
+    tiger_status = await _check_tiger()
 
     cfg = get_settings()
 
@@ -360,7 +364,7 @@ async def health_check() -> JSONResponse:
         "services": {
             "postgres": postgres_status,
             "redis": redis_status,
-            "qdrant": qdrant_status,
+            "tiger": tiger_status,
         },
         "circuit_breakers": list_breaker_summaries(),
     }

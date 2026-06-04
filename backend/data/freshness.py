@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# TIGER: repo_file_index table is now on the Tiger Cloud instance (same connection pool as code_chunks)
 # get_stale_files
 #
 # Given a repo and a {file_path: blob_sha} map of the repo's CURRENT state,

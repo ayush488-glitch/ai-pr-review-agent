@@ -113,7 +113,7 @@ DEFAULT_TOOL_BREAKER_CONFIG = BreakerConfig(
 DEFAULT_VECTOR_BREAKER_CONFIG = BreakerConfig(
     failure_threshold=3,
     recovery_timeout_s=30.0,
-    name="qdrant",
+    name="tiger",
 )
 
 

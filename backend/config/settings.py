@@ -100,26 +100,45 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/pr_review_agent"
 
     # -------------------------------------------------------------------------
-    # Qdrant
+    # Tiger Cloud (TimescaleDB) — Semantic Memory + Events Spine
+    #
+    # Tiger Cloud is the single data store for:
+    #   1. code_chunks — pgvectorscale DiskANN (replaces Qdrant)
+    #   2. agent_events — hypertable (audit trail, trace viewer, cost ledger)
+    #   3. agent_health_1m / pr_cost_hourly — continuous aggregates (dashboards)
+    #
+    # Tiger Cloud connection string format:
+    #   postgres://tsdbadmin:<password>@<service>.tigerdata.cloud:5432/tsdb?sslmode=require
+    #
+    # For local development, use timescaledb-ha Docker (see docker-compose.yml):
+    #   postgresql+asyncpg://postgres:postgres@localhost:5432/pr_review_agent
+    #
+    # Set TIGER_DATABASE_URL separately from DATABASE_URL so Tiger Cloud billing
+    # and audit trail are isolated from the main app Postgres connection pool.
+    # If TIGER_DATABASE_URL is empty, falls back to DATABASE_URL (dev only).
     # -------------------------------------------------------------------------
+    tiger_database_url: str = Field(
+        default="",
+        description=(
+            "Tiger Cloud connection URL. "
+            "Format: postgres://tsdbadmin:<password>@<host>:5432/tsdb?sslmode=require. "
+            "Falls back to DATABASE_URL when empty (local dev with timescaledb-ha Docker)."
+        ),
+    )
 
-    # Qdrant vector store URL.
-    # Used for: codebase RAG (repo files embedded and indexed here)
-    qdrant_url: str = "http://localhost:6333"
-
-    # Name of the Qdrant collection that stores codebase embeddings.
-    qdrant_collection_name: str = "codebase_embeddings"
-
-    # Qdrant API key. Required for Qdrant Cloud; leave empty for local Qdrant.
-    # Default empty string = local Qdrant (no auth required).
-    # (Production-Hardening.md: "Optional deps have sane defaults for local dev.")
-    qdrant_api_key: str = ""
+    # Tiger Cloud asyncpg pool settings (separate from the main app pool)
+    tiger_pool_min: int = Field(default=2, description="Min connections in Tiger pool.")
+    tiger_pool_max: int = Field(default=10, description="Max connections in Tiger pool.")
 
     # OpenAI embedding model.
-    # text-embedding-3-small: 1536 dims, fast, cost-effective for code semantics.
-    # Must match EMBEDDING_DIMENSIONS in backend/memory/embedder.py (1536).
-    # (RAG-Architecture.md: "Dense embeddings capture semantic understanding.")
-    openai_embedding_model: str = "text-embedding-3-small"
+    # text-embedding-3-large with 256 dims: 6x less storage vs 1536-dim small,
+    # same recall curve on code with DiskANN. Matches code_chunks VECTOR(256).
+    # (ADR-003: "256-dim large outperforms 1536-dim small at 1/6th the storage.")
+    openai_embedding_model: str = "text-embedding-3-large"
+
+    # Number of embedding dimensions. Must match VECTOR(N) in code_chunks table.
+    # 256 for text-embedding-3-large truncated. Change only with a full re-index.
+    openai_embedding_dimensions: int = 256
 
     # -------------------------------------------------------------------------
     # LLM Providers

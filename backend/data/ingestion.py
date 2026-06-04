@@ -1,45 +1,42 @@
 # backend/data/ingestion.py
 #
 # Repository ingestion pipeline.
-# Converts a GitHub repo's source files into Qdrant vector embeddings.
+# Converts a GitHub repo's source files into Tiger Cloud vector embeddings.
 #
 # DESIGN PHILOSOPHY (Batch-Processing-Patterns.md wiki):
 #   "Immutable inputs and explicit outputs: a batch job reads input without
 #    modifying it and writes output to a new location. This makes reruns safe."
 #
-#   GitHub file content is the IMMUTABLE SOURCE. Qdrant is the DERIVED STORE.
+#   GitHub file content is the IMMUTABLE SOURCE. Tiger code_chunks is the DERIVED STORE.
 #   This pipeline is safe to re-run at any time — same input produces identical
-#   output. If Qdrant is wiped, re-running ingestion restores it fully.
+#   output. If code_chunks is wiped, re-running ingestion restores it fully.
+#
+# TIGER CHANGE:
+#   Previously: upsert_code_chunks() from backend.memory.qdrant_client
+#   Now:        TigerMemoryClient.upsert_chunks() via tiger_client.py
+#   Same logical interface. Tiger uses DiskANN (pgvectorscale) instead of HNSW (Qdrant).
+#   The code_chunks table lives on the Tiger Cloud Postgres instance.
+#   Freshness tracking (repo_file_index) is on the same Tiger instance.
 #
 # COMPOSABLE STAGES (Unix philosophy from Batch wiki):
 #   "Each program does one thing well. Programs can be composed via pipes."
 #   Each stage below is a pure async function. They compose sequentially:
 #     fetch_repo_tree -> filter_code_files -> fetch_file_content
-#     -> embed (via embedder.py) -> upsert (via qdrant_client.py)
+#     -> chunk (split into CodeChunk objects) -> embed -> upsert (Tiger)
 #     -> mark_freshness (via freshness.py)
 #   Any stage can fail independently without corrupting others.
 #
 # PER-FILE ERROR ISOLATION:
 #   A single file failing to fetch/embed does NOT abort the whole ingestion.
-#   The pipeline logs a warning and continues. This is the "fault is not a
-#   failure" principle from Distributed-Systems-Fault-Model.md wiki.
+#   The pipeline logs a warning and continues.
 #
 # FRESHNESS CHECK (Derived-Data-Systems.md wiki):
-#   "Secondary indexes can be rebuilt from the primary source at any time."
 #   We compare GitHub's current blob SHA against what we last embedded.
 #   Same SHA = file unchanged = skip. Different SHA = stale = re-embed.
 #   This makes incremental re-indexing cheap: only changed files are re-embedded.
 #
-# GRACEFUL DEGRADATION (Production-Hardening.md wiki):
-#   If GitHub is unreachable or returns 404 (fake/private repo in dev mode),
-#   ingest_repository() returns gracefully with a warning. The caller
-#   (arq_worker.py) is unaffected — it treats ingestion as best-effort.
-#
 # CODE FILE EXTENSIONS:
 #   We index source code only — not docs, configs, or binary files.
-#   Rationale (RAG-Architecture.md): "Retrieval strategy must match corpus shape."
-#   Our corpus shape is source code. Indexing README.md or package-lock.json
-#   adds noise without improving code-review RAG quality.
 
 import logging
 from typing import Any
@@ -50,7 +47,7 @@ from backend.config.settings import get_settings
 from backend.data.freshness import get_stale_files, mark_files_embedded
 from backend.database.postgres import get_session_factory
 from backend.memory.embedder import EmbeddingError, embed_text
-from backend.memory.qdrant_client import upsert_code_chunks
+from backend.memory.tiger_client import CodeChunk, get_tiger_memory  # TIGER: was qdrant_client
 
 logger = logging.getLogger(__name__)
 
@@ -429,21 +426,21 @@ async def ingest_repository(repo_full_name: str) -> dict[str, int]:
                 summary["errors"] += 1
                 continue
 
-            # Stage 4c: upsert into Qdrant
-            # upsert_code_chunks expects a list of chunk dicts.
-            # We use file-as-unit chunking (embedder.py truncates at 8000 chars).
-            # Payload includes file_path for citation grounding.
+            # Stage 4c: upsert into Tiger Cloud (code_chunks table, DiskANN index)
+            # TIGER: was upsert_code_chunks() to Qdrant.
+            # Now: TigerMemoryClient.upsert_chunks() with CodeChunk dataclass.
+            # Same file-as-unit chunking strategy. Payload stays in the content + symbol fields.
             # (RAG-Architecture.md: "Every chunk must carry provenance.")
-            chunk = {
-                "file_path": file_path,
-                "chunk_text": content[:8000],  # consistent with embedder MAX_EMBED_CHARS
-                "vector": vector,
-            }
-            await upsert_code_chunks(
-                pr_number=0,        # 0 = base codebase (not from a specific PR)
-                repo_full_name=repo_full_name,
-                file_chunks=[chunk],
+            chunk = CodeChunk(
+                repo=repo_full_name,
+                path=file_path,
+                content=content[:8000],   # consistent with embedder MAX_EMBED_CHARS
+                embedding=vector,
+                chunk_index=0,            # single-chunk-per-file strategy (Phase 6)
+                token_count=len(content.split()),
             )
+            tiger = get_tiger_memory()
+            await tiger.upsert_chunks([chunk])
 
             # Stage 4d: record freshness
             async with session_factory() as session:
